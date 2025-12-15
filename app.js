@@ -247,25 +247,33 @@ async function initializeMediaPipe() {
         console.log('Initializing MediaPipe Pose Landmarker...');
         showLoadingOverlay('Initializing MediaPipe...');
 
-        // Wait for MediaPipe library to load
-        if (typeof vision === 'undefined') {
-            await new Promise((resolve) => {
+        // Wait for MediaPipe library to load (checks for actual exported objects)
+        if (typeof FilesetResolver === 'undefined' || typeof PoseLandmarker === 'undefined') {
+            console.log('Waiting for MediaPipe library to load...');
+            await new Promise((resolve, reject) => {
+                let attempts = 0;
+                const maxAttempts = 50; // 5 seconds max
                 const checkLibrary = setInterval(() => {
-                    if (typeof vision !== 'undefined') {
+                    attempts++;
+                    if (typeof FilesetResolver !== 'undefined' && typeof PoseLandmarker !== 'undefined') {
+                        console.log('MediaPipe library loaded successfully');
                         clearInterval(checkLibrary);
                         resolve();
+                    } else if (attempts >= maxAttempts) {
+                        clearInterval(checkLibrary);
+                        reject(new Error('MediaPipe library failed to load after 5 seconds'));
                     }
                 }, 100);
             });
         }
 
-        const { PoseLandmarker, FilesetResolver } = vision;
-
+        console.log('Creating FilesetResolver...');
         // Load model files
         const filesetResolver = await FilesetResolver.forVisionTasks(
             "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/wasm"
         );
 
+        console.log('Creating PoseLandmarker...');
         // Create pose landmarker with optimized settings
         state.poseLandmarker = await PoseLandmarker.createFromOptions(filesetResolver, {
             baseOptions: {
