@@ -1,0 +1,10 @@
+{
+  "name": "kb-velocity-tracker",
+  "version": "1.0.0",
+  "description": "Kettlebell Velocity Tracker - Anaerobic Threshold Detection",
+  "type": "module",
+  "scripts": {},
+  "keywords": ["kettlebell", "velocity", "tracking", "mediapipe", "anaerobic-threshold"],
+  "author": "",
+  "license": "MIT"
+}
