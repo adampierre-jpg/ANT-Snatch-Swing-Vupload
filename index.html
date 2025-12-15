@@ -1,0 +1,127 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <meta name="description" content="Kettlebell Velocity Tracker - Detect anaerobic threshold via velocity drop-off">
+    <meta name="theme-color" content="#1a1a2e">
+    <title>KB Velocity Tracker - Anaerobic Threshold Detection</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>🏋️ KB Velocity Tracker</h1>
+            <p class="subtitle">Anaerobic Threshold Detection via Velocity Drop-off</p>
+        </header>
+
+        <main>
+            <!-- Exercise Selection -->
+            <section class="exercise-selection" id="exerciseSelection">
+                <h2>Select Exercise Type</h2>
+                <div class="exercise-buttons">
+                    <button class="exercise-btn" data-exercise="snatch-left" data-wrist="15">Snatch Left</button>
+                    <button class="exercise-btn" data-exercise="snatch-right" data-wrist="16">Snatch Right</button>
+                    <button class="exercise-btn" data-exercise="two-arm-swing" data-wrist="both">Two Arm Swing</button>
+                    <button class="exercise-btn" data-exercise="swing-left" data-wrist="15">Swing Left</button>
+                    <button class="exercise-btn" data-exercise="swing-right" data-wrist="16">Swing Right</button>
+                </div>
+            </section>
+
+            <!-- Input Mode Selection -->
+            <section class="mode-selection" id="modeSelection" style="display: none;">
+                <h2>Choose Input Mode</h2>
+                <div class="mode-buttons">
+                    <button class="mode-btn" id="liveCameraBtn">
+                        <span class="icon">📹</span>
+                        <span>Live Camera</span>
+                    </button>
+                    <button class="mode-btn" id="uploadVideoBtn">
+                        <span class="icon">📁</span>
+                        <span>Upload Video</span>
+                    </button>
+                </div>
+                <input type="file" id="videoFileInput" accept="video/*" style="display: none;">
+            </section>
+
+            <!-- Video/Canvas Container -->
+            <section class="video-section" id="videoSection" style="display: none;">
+                <div class="video-container">
+                    <video id="webcam" autoplay playsinline muted></video>
+                    <canvas id="canvas"></canvas>
+                    <div class="loading-overlay" id="loadingOverlay">
+                        <div class="spinner"></div>
+                        <p>Initializing MediaPipe...</p>
+                    </div>
+                </div>
+
+                <!-- Controls -->
+                <div class="controls">
+                    <button id="startBtn" class="btn btn-primary" disabled>Start Test</button>
+                    <button id="stopBtn" class="btn btn-danger" disabled>Stop Test</button>
+                    <button id="resetBtn" class="btn btn-secondary">Reset</button>
+                    <button id="backBtn" class="btn btn-secondary">Back to Selection</button>
+                </div>
+
+                <!-- Real-time Metrics -->
+                <div class="metrics-grid" id="metricsGrid">
+                    <div class="metric-card">
+                        <div class="metric-label">Current Velocity</div>
+                        <div class="metric-value" id="currentVelocity">0.00</div>
+                        <div class="metric-unit">m/s</div>
+                    </div>
+                    <div class="metric-card">
+                        <div class="metric-label">Peak Velocity</div>
+                        <div class="metric-value" id="peakVelocity">0.00</div>
+                        <div class="metric-unit">m/s</div>
+                    </div>
+                    <div class="metric-card">
+                        <div class="metric-label">Baseline Velocity</div>
+                        <div class="metric-value" id="baselineVelocity">--</div>
+                        <div class="metric-unit">m/s</div>
+                    </div>
+                    <div class="metric-card">
+                        <div class="metric-label">Velocity Drop</div>
+                        <div class="metric-value" id="velocityDrop">0</div>
+                        <div class="metric-unit">%</div>
+                    </div>
+                    <div class="metric-card">
+                        <div class="metric-label">Rep Count</div>
+                        <div class="metric-value" id="repCount">0</div>
+                        <div class="metric-unit">reps</div>
+                    </div>
+                    <div class="metric-card status-card" id="statusCard">
+                        <div class="metric-label">Status</div>
+                        <div class="metric-value status-text" id="statusText">Ready</div>
+                    </div>
+                </div>
+
+                <!-- Threshold Alert -->
+                <div class="alert" id="thresholdAlert" style="display: none;">
+                    <strong>⚠️ Threshold Reached!</strong>
+                    <span id="alertMessage"></span>
+                </div>
+            </section>
+
+            <!-- Results Section -->
+            <section class="results-section" id="resultsSection">
+                <h2>Test Results</h2>
+                <div id="resultsContainer">
+                    <p class="no-results">No test results yet. Complete a test to see results here.</p>
+                </div>
+                <button id="clearResultsBtn" class="btn btn-secondary" style="display: none;">Clear All Results</button>
+            </section>
+        </main>
+
+        <footer>
+            <p>Built for anaerobic threshold detection • MediaPipe Pose • Client-side processing</p>
+        </footer>
+    </div>
+
+    <!-- MediaPipe Tasks Vision -->
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/vision_bundle.js" crossorigin="anonymous"></script>
+
+    <!-- Main Application -->
+    <script src="app.js"></script>
+</body>
+</html>
