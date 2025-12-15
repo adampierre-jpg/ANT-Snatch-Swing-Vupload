@@ -247,7 +247,18 @@ async function initializeMediaPipe() {
         console.log('Initializing MediaPipe Pose Landmarker...');
         showLoadingOverlay('Initializing MediaPipe...');
 
-        const vision = await window.vision;
+        // Wait for MediaPipe library to load
+        if (typeof vision === 'undefined') {
+            await new Promise((resolve) => {
+                const checkLibrary = setInterval(() => {
+                    if (typeof vision !== 'undefined') {
+                        clearInterval(checkLibrary);
+                        resolve();
+                    }
+                }, 100);
+            });
+        }
+
         const { PoseLandmarker, FilesetResolver } = vision;
 
         // Load model files
