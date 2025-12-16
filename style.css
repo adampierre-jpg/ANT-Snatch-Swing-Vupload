@@ -1,4 +1,22 @@
-root {
+:root {
+  --bg-primary: #0f172a;
+  --bg-secondary: #1e293b;
+  --text-primary: #f1f5f9;
+  --text-secondary: #e2e8f0;
+  --text-muted: #94a3b8;
+  --text-subtle: #64748b;
+  --accent-primary: #3b82f6;
+  --accent-primary-hover: #2563eb;
+  --accent-secondary: #8b5cf6;
+  --accent-secondary-hover: #7c3aed;
+  --border-primary: #3b82f6;
+  --neutral: #475569;
+  --neutral-dark: #64748b;
+  --overlay-bg: rgba(15, 23, 42, 0.9);
+  --debug-bg: rgba(0, 0, 0, 0.85);
+}
+
+* {
   box-sizing: border-box;
   margin: 0;
   padding: 0;
@@ -6,8 +24,8 @@ root {
 
 body {
   font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-  background: #0f172a;
-  color: #f1f5f9;
+  background: var(--bg-primary);
+  color: var(--text-primary);
   min-height: 100vh;
   display: flex;
   flex-direction: column;
@@ -18,7 +36,7 @@ body {
 h1 {
   font-size: 1.5rem;
   margin-bottom: 1rem;
-  color: #e2e8f0;
+  color: var(--text-secondary);
 }
 
 .video-container {
@@ -26,7 +44,7 @@ h1 {
   width: 100%;
   max-width: 640px;
   aspect-ratio: 4/3;
-  background: #1e293b;
+  background: var(--bg-secondary);
   border-radius: 12px;
   overflow: hidden;
   margin-bottom: 1rem;
@@ -53,12 +71,12 @@ h1 {
   left: 0;
   width: 100%;
   height: 100%;
-  background: rgba(15, 23, 42, 0.9);
+  background: var(--overlay-bg);
   display: flex;
   align-items: center;
   justify-content: center;
   font-size: 1.2rem;
-  color: #94a3b8;
+  color: var(--text-muted);
 }
 
 #loading-overlay.hidden {
@@ -74,7 +92,7 @@ h1 {
 }
 
 button, .file-label {
-  background: #3b82f6;
+  background: var(--accent-primary);
   color: white;
   border: none;
   padding: 0.75rem 1.5rem;
@@ -85,29 +103,29 @@ button, .file-label {
 }
 
 button:hover:not(:disabled), .file-label:hover {
-  background: #2563eb;
+  background: var(--accent-primary-hover);
 }
 
 button:disabled {
-  background: #475569;
+  background: var(--neutral);
   cursor: not-allowed;
 }
 
 #btn-reset {
-  background: #64748b;
+  background: var(--neutral-dark);
 }
 
 #btn-reset:hover:not(:disabled) {
-  background: #475569;
+  background: var(--neutral);
 }
 
 .file-label {
   display: inline-block;
-  background: #8b5cf6;
+  background: var(--accent-secondary);
 }
 
 .file-label:hover {
-  background: #7c3aed;
+  background: var(--accent-secondary-hover);
 }
 
 #file-input {
@@ -117,9 +135,9 @@ button:disabled {
 #status-pill {
   display: inline-block;
   padding: 0.5rem 1rem;
-  border: 2px solid #3b82f6;
+  border: 2px solid var(--border-primary);
   border-radius: 20px;
-  color: #3b82f6;
+  color: var(--border-primary);
   font-weight: 600;
   margin-bottom: 1rem;
   text-align: center;
@@ -135,7 +153,7 @@ button:disabled {
 }
 
 .metric-card {
-  background: #1e293b;
+  background: var(--bg-secondary);
   border-radius: 12px;
   padding: 1rem;
   text-align: center;
@@ -143,7 +161,7 @@ button:disabled {
 
 .metric-label {
   font-size: 0.75rem;
-  color: #94a3b8;
+  color: var(--text-muted);
   text-transform: uppercase;
   letter-spacing: 0.05em;
   margin-bottom: 0.5rem;
@@ -152,12 +170,12 @@ button:disabled {
 .metric-value {
   font-size: 1.75rem;
   font-weight: 700;
-  color: #f1f5f9;
+  color: var(--text-primary);
 }
 
 .metric-unit {
   font-size: 0.875rem;
-  color: #64748b;
+  color: var(--text-subtle);
   margin-left: 0.25rem;
 }
 
@@ -167,8 +185,8 @@ button:disabled {
   bottom: 0;
   left: 0;
   right: 0;
-  background: rgba(0,0,0,0.85);
-  color: #94a3b8;
+  background: var(--debug-bg);
+  color: var(--text-muted);
   font-family: monospace;
   font-size: 0.75rem;
   padding: 0.5rem;
@@ -179,7 +197,7 @@ button:disabled {
 }
 
 #debug-bar span {
-  color: #f1f5f9;
+  color: var(--text-primary);
 }
 
 /* Responsive */
