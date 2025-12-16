@@ -11,10 +11,13 @@ let state = {
     canvas: null,
     ctx: null,
     landmarker: null,
-    isModelLoaded: false, // AI loaded
-    isVideoReady: false,  // Video loaded
+    
+    // Flags
+    isModelLoaded: false,
+    isVideoReady: false,
     isTestRunning: false,
-    lastVideoTime: -1,
+    
+    // Data
     prevWrist: null,
     velocityBuffer: [],
     currentVel: 0
@@ -38,7 +41,8 @@ async function initializeApp() {
                 delegate: "GPU"
             },
             runningMode: "VIDEO",
-            numPoses: 1
+            numPoses: 1,
+            minPoseDetectionConfidence: CONFIG.CONFIDENCE
         });
 
         console.log("✅ AI Model Loaded");
@@ -50,16 +54,52 @@ async function initializeApp() {
         document.getElementById('btn-camera').onclick = startCamera;
         document.getElementById('file-input').onchange = handleUpload;
         
-        // 3. Setup Video Event Listeners (The Fix)
+        // 3. Setup Video Events
         state.video.addEventListener('loadeddata', onVideoReady);
         state.video.addEventListener('error', (e) => alert("Video Error: " + state.video.error.message));
 
-        // 4. Setup Controls
-        document.getElementById('btn-start-test').onclick = () => state.isTestRunning = true;
-        document.getElementById('btn-reset').onclick = () => {
+        // 4. Setup Test Controls
+        const startBtn = document.getElementById('btn-start-test');
+        const resetBtn = document.getElementById('btn-reset');
+        const controlsDiv = document.querySelector('.video-controls');
+
+        startBtn.onclick = () => {
+            console.log("▶ Starting Test...");
+            state.isTestRunning = true;
+            state.prevWrist = null;
+            state.velocityBuffer = [];
+            
+            startBtn.textContent = "Test Running...";
+            startBtn.disabled = true;
+            resetBtn.disabled = false;
+            
+            // Hide scrubber during test
+            controlsDiv.style.display = 'none';
+            
+            if (state.video.paused) {
+                state.video.play().catch(e => {
+                    console.error("Play failed:", e);
+                    alert("Tap video to start (Auto-play blocked)");
+                });
+            }
+        };
+
+        resetBtn.onclick = () => {
+            console.log("↺ Resetting Test...");
             state.isTestRunning = false;
             state.prevWrist = null;
             state.ctx.clearRect(0,0,state.canvas.width, state.canvas.height);
+            
+            startBtn.textContent = "▶ Start Test";
+            startBtn.disabled = false;
+            resetBtn.disabled = true;
+            document.getElementById('val-velocity').textContent = "0.00";
+            
+            // Show scrubber again
+            controlsDiv.style.display = 'flex';
+            
+            state.video.pause();
+            state.video.currentTime = 0;
         };
         
         setupVideoControls();
@@ -82,7 +122,7 @@ function handleUpload(e) {
     
     const url = URL.createObjectURL(file);
     state.video.src = url;
-    state.video.load(); // Force load
+    state.video.load(); 
 }
 
 async function startCamera() {
@@ -106,7 +146,7 @@ function onVideoReady() {
     document.getElementById('status-pill').textContent = "Scanning for Wrist...";
     document.getElementById('btn-start-test').disabled = false;
     
-    // Force a single play/pause to wake up mobile rendering
+    // Wake up mobile rendering
     state.video.play().then(() => {
         setTimeout(() => {
             if(!state.isTestRunning) state.video.pause();
@@ -115,16 +155,12 @@ function onVideoReady() {
 }
 
 function renderLoop() {
-    // Only run if AI is loaded AND Video is ready
     if (state.isModelLoaded && state.isVideoReady) {
-        
-        // Run detection if video has data (playing or paused-but-loaded)
         if (state.video.readyState >= 2) {
             let startTimeMs = performance.now();
             if (state.video.duration) startTimeMs = state.video.currentTime * 1000;
 
             const result = state.landmarker.detectForVideo(state.video, startTimeMs);
-            
             state.ctx.clearRect(0, 0, state.canvas.width, state.canvas.height);
             
             if (result.landmarks && result.landmarks.length > 0) {
@@ -148,28 +184,36 @@ function renderLoop() {
 }
 
 function calculatePhysics(wrist, time) {
+    // 1. First frame check
+    if (!state.prevWrist) {
+        state.prevWrist = { x: wrist.x, y: wrist.y, time: time };
+        return;
+    }
+
+    // 2. Time Delta Check (Prevent Stuck Dot)
+    const dt = (time - state.prevWrist.time) / 1000;
+    if (dt < 0.01) return; // Skip invalid frames
+
     const x = wrist.x * state.canvas.width;
     const y = wrist.y * state.canvas.height;
     
-    if (state.prevWrist) {
-        const dx = x - state.prevWrist.x;
-        const dy = y - state.prevWrist.y;
-        const dist = Math.sqrt(dx*dx + dy*dy);
-        const dt = (time - state.prevWrist.time) / 1000;
-        
-        // Calibration: 2m width
-        const scale = state.canvas.width / 2.0;
-        
-        if (dt > 0.005) {
-            const vel = (dist / scale) / dt;
-            state.velocityBuffer.push(vel);
-            if (state.velocityBuffer.length > CONFIG.SMOOTHING) state.velocityBuffer.shift();
-            const smoothed = state.velocityBuffer.reduce((a,b)=>a+b)/state.velocityBuffer.length;
-            
-            document.getElementById('val-velocity').textContent = smoothed.toFixed(2);
-        }
-    }
-    state.prevWrist = { x, y, time };
+    const dx = x - (state.prevWrist.x * state.canvas.width);
+    const dy = y - (state.prevWrist.y * state.canvas.height);
+    const dist = Math.sqrt(dx*dx + dy*dy);
+    
+    // Calibration: 2m width
+    const scale = state.canvas.width / 2.0;
+    
+    const vel = (dist / scale) / dt;
+    
+    // Smoothing
+    state.velocityBuffer.push(vel);
+    if (state.velocityBuffer.length > CONFIG.SMOOTHING) state.velocityBuffer.shift();
+    const smoothed = state.velocityBuffer.reduce((a,b)=>a+b)/state.velocityBuffer.length;
+    
+    document.getElementById('val-velocity').textContent = smoothed.toFixed(2);
+    
+    state.prevWrist = { x: wrist.x, y: wrist.y, time: time };
 }
 
 function drawDot(wrist) {
@@ -184,6 +228,7 @@ function drawDot(wrist) {
 function setupVideoControls() {
     const btn = document.getElementById('btn-play-pause');
     const bar = document.getElementById('seek-bar');
+    const display = document.getElementById('time-display');
     
     btn.onclick = (e) => {
         e.preventDefault();
@@ -193,6 +238,9 @@ function setupVideoControls() {
     state.video.ontimeupdate = () => {
         bar.max = state.video.duration;
         bar.value = state.video.currentTime;
+        const mins = Math.floor(state.video.currentTime / 60);
+        const secs = Math.floor(state.video.currentTime % 60).toString().padStart(2, '0');
+        display.textContent = `${mins}:${secs}`;
     };
 }
 
