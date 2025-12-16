@@ -189,32 +189,53 @@ function drawDot(wrist) {
 function setupControls() {
     const startBtn = document.getElementById('btn-start-test');
     const resetBtn = document.getElementById('btn-reset');
+    const velocityDisplay = document.getElementById('val-velocity');
+    const statusPill = document.getElementById('status-pill');
 
     startBtn.onclick = () => {
+        // 1. Lock UI
         state.isTestRunning = true;
-        state.prevWrist = null;
-        state.maxVelocity = 0;
-        
         startBtn.textContent = "Test Running...";
         startBtn.disabled = true;
         resetBtn.disabled = false;
         
+        // 2. Reset Physics Engine for new run
+        state.prevWrist = null;
+        state.maxVelocity = 0;
+        velocityDisplay.textContent = "0.00";
+        velocityDisplay.style.color = "black";
+        
+        // 3. Start Video & Loop
         state.video.play();
         state.video.requestVideoFrameCallback(renderLoop);
     };
 
     resetBtn.onclick = () => {
+        // 1. Stop Everything
         state.isTestRunning = false;
-        state.prevWrist = null;
+        state.video.pause();
+        
+        // 2. Clear Visuals Immediately
+        state.ctx.clearRect(0, 0, state.canvas.width, state.canvas.height);
+        velocityDisplay.textContent = "0.00";
+        velocityDisplay.style.color = "black";
+        
+        // 3. Reset UI State
         startBtn.textContent = "▶ Start Test";
         startBtn.disabled = false;
         resetBtn.disabled = true;
         
-        state.video.pause();
+        // 4. Reset Status Pill
+        // We set it to scanning temporarily until the seek finishes and finds the wrist again
+        statusPill.textContent = "Scanning..."; 
+        statusPill.style.color = "#fbbf24";
+
+        // 5. Rewind
+        // This triggers the 'seeked' event listener we added earlier,
+        // which will automatically run processSingleFrame(0) and find the wrist at the start.
         state.video.currentTime = 0;
-        // Force one update on reset to show the dot again
-        setTimeout(() => processSingleFrame(0), 100);
     };
 }
+
 
 initializeApp();
