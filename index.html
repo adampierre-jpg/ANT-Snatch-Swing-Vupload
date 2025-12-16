@@ -3,9 +3,10 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Kettlebell Velocity Tracker</title>
+    <meta name="description" content="Kettlebell Velocity Tracker - Real-time Anaerobic Threshold Detection">
+    <title>KB Velocity Tracker</title>
     <link rel="stylesheet" href="style.css">
-    <!-- Preconnect to MediaPipe CDN for faster loading -->
+    <!-- Preconnect for performance -->
     <link rel="preconnect" href="https://cdn.jsdelivr.net">
 </head>
 <body>
@@ -13,86 +14,82 @@
 <div class="app-container">
     
     <!-- HEADER -->
-    <header>
-        <h1>KB Velocity Tracker</h1>
-        <div id="status-pill" class="status-pill">System Ready</div>
+    <header class="app-header">
+        <div class="header-content">
+            <h1>KB Velocity Tracker</h1>
+            <div id="status-pill" class="status-pill">Initializing...</div>
+        </div>
     </header>
 
-    <!-- MAIN VIDEO FEED -->
-    <div class="viewport-container">
-        <!-- The video element (hidden or visible, acts as source) -->
-        <video id="video" playsinline muted></video>
-        <!-- The canvas overlay (drawing the skeleton + metrics) -->
-        <canvas id="canvas"></canvas>
-        
-        <!-- Startup / Loading Overlay -->
-        <div id="loading-overlay" class="overlay hidden">
-            <div class="spinner"></div>
-            <p>Initializing MediaPipe AI...</p>
-        </div>
-    </div>
+    <!-- MAIN VIDEO VIEWPORT -->
+    <main class="viewport-wrapper">
+        <div class="viewport-container">
+            <!-- Video & Canvas Layers -->
+            <video id="video" playsinline muted></video>
+            <canvas id="canvas"></canvas>
+            
+            <!-- Custom Video Controls (Overlay) -->
+            <div class="video-controls">
+                <button id="btn-play-pause" class="control-btn" aria-label="Play/Pause">▶</button>
+                <input type="range" id="seek-bar" value="0" min="0" step="0.1" aria-label="Seek Video">
+                <span id="time-display">0:00</span>
+            </div>
 
-    <!-- CONTROL PANEL -->
-    <div class="controls-section">
-        <!-- Source Selection -->
-        <div class="button-group source-controls">
+            <!-- Loading Overlay -->
+            <div id="loading-overlay" class="overlay">
+                <div class="spinner"></div>
+                <p>Loading AI Model...</p>
+            </div>
+        </div>
+    </main>
+
+    <!-- CONTROLS & METRICS -->
+    <section class="dashboard-section">
+        
+        <!-- Input Controls -->
+        <div class="controls-group">
             <button id="btn-camera" class="btn btn-primary">
                 📷 Use Camera
             </button>
             <button id="btn-upload" class="btn btn-secondary" onclick="document.getElementById('video-upload').click()">
                 📂 Upload Video
             </button>
+            <!-- Hidden File Input -->
             <input type="file" id="video-upload" accept="video/*" style="display:none">
         </div>
 
-        <!-- Test Controls (Disabled until video is ready) -->
-        <div class="button-group test-controls">
-            <button id="btn-start-test" class="btn btn-success" disabled>Start Test</button>
-            <button id="btn-stop-test" class="btn btn-danger" disabled>Stop</button>
-            <button id="btn-reset" class="btn btn-outline" disabled>Reset</button>
-        </div>
-    </div>
+        <!-- Live Metrics Grid -->
+        <div class="metrics-grid">
+            <div class="metric-card">
+                <span class="label">Velocity</span>
+                <span class="value" id="val-velocity">0.00</span>
+                <span class="unit">m/s</span>
+            </div>
+            
+            <div class="metric-card">
+                <span class="label">Peak Rep</span>
+                <span class="value" id="val-peak">0.00</span>
+                <span class="unit">m/s</span>
+            </div>
 
-    <!-- LIVE METRICS DASHBOARD -->
-    <div class="metrics-grid">
-        <div class="metric-card">
-            <span class="label">Current Velocity</span>
-            <span class="value" id="val-velocity">0.00</span>
-            <span class="unit">m/s</span>
-        </div>
-        
-        <div class="metric-card">
-            <span class="label">Rep Peak</span>
-            <span class="value" id="val-peak">0.00</span>
-            <span class="unit">m/s</span>
-        </div>
+            <div class="metric-card">
+                <span class="label">Reps</span>
+                <span class="value" id="val-reps">0</span>
+                <span class="unit">count</span>
+            </div>
 
-        <div class="metric-card">
-            <span class="label">Reps Completed</span>
-            <span class="value" id="val-reps">0</span>
-            <span class="unit">count</span>
+            <div class="metric-card highlight-card">
+                <span class="label">Drop %</span>
+                <span class="value" id="val-drop">--</span>
+                <span class="unit">Threshold</span>
+            </div>
         </div>
 
-        <div class="metric-card highlight-card">
-            <span class="label">Velocity Drop</span>
-            <span class="value" id="val-drop">0%</span>
-            <span class="unit">Threshold</span>
-        </div>
-    </div>
-
-    <!-- ALERT BANNER (Populates dynamically) -->
-    <div id="alert-banner" class="alert-banner hidden"></div>
-
-    <!-- RESULTS SUMMARY (Hidden by default) -->
-    <div id="results-area" class="results-area hidden">
-        <h3>Test Results</h3>
-        <div id="results-content"></div>
-        <button onclick="document.getElementById('results-area').classList.add('hidden')" class="btn btn-sm">Close</button>
-    </div>
+    </section>
 
 </div>
 
-<!-- Load the Application Logic -->
+<!-- Application Logic -->
 <script type="module" src="app.js"></script>
 
 </body>
