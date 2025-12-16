@@ -16,7 +16,6 @@ body {
     font-family: -apple-system, system-ui, sans-serif;
     margin: 0;
     padding: 0;
-    /* Prevent pull-to-refresh on mobile */
     overscroll-behavior: none;
 }
 
@@ -49,7 +48,7 @@ body {
     border: 1px solid #334155;
 }
 
-/* VIDEO CONTAINER (DYNAMIC SIZING) */
+/* VIDEO CONTAINER */
 .viewport-wrapper {
     width: 100%;
     background: #000;
@@ -57,7 +56,6 @@ body {
     overflow: hidden;
     border: 2px solid #334155;
     position: relative;
-    /* Min height to avoid collapse */
     min-height: 250px; 
 }
 
@@ -74,7 +72,7 @@ video {
     display: block;
     width: 100%;
     height: auto;
-    max-height: 75vh; /* Prevent overly tall vertical videos */
+    max-height: 75vh;
     z-index: 1;
 }
 
@@ -82,7 +80,7 @@ canvas {
     position: absolute;
     top: 0; left: 0;
     width: 100%; height: 100%;
-    pointer-events: none; /* Click-through */
+    pointer-events: none; 
     z-index: 2;
 }
 
@@ -108,7 +106,7 @@ canvas {
 #seek-bar { flex: 1; height: 5px; cursor: pointer; }
 #time-display { font-variant-numeric: tabular-nums; font-size: 0.9rem; min-width: 40px; }
 
-/* DASHBOARD CONTROLS */
+/* DASHBOARD */
 .dashboard { display: flex; flex-direction: column; gap: 20px; }
 
 .control-group label {
@@ -138,7 +136,7 @@ canvas {
 .btn-success { background: var(--success); color: white; }
 .btn-outline { background: transparent; border: 1px solid #475569; color: var(--text-muted); }
 
-/* METRICS GRID */
+/* METRICS */
 .metrics-grid {
     display: grid;
     grid-template-columns: repeat(2, 1fr);
