@@ -1,12 +1,12 @@
 import { PoseLandmarker, FilesetResolver } from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/vision_bundle.mjs";
 
 /**
- * STATE MANAGEMENT
+ * CONFIGURATION
  */
 const CONFIG = {
-    WRIST_INDEX: 16,
-    SHOULDER_WIDTH_M: 0.45,
-    SMOOTHING_WINDOW: 3
+    WRIST_INDEX: 16,     // Right Wrist
+    CONFIDENCE: 0.5,     // Minimum confidence to "Green Light"
+    SMOOTHING: 3         // Frames to smooth velocity
 };
 
 let state = {
@@ -15,31 +15,34 @@ let state = {
     canvas: null,
     ctx: null,
     landmarker: null,
-    isReady: false,
     
-    // Physics & Logic
-    pixelScale: 1,
-    isTestRunning: false,
-    lastFrameTime: 0,
+    // Status Flags
+    isSystemReady: false,   // MediaPipe loaded
+    isWristFound: false,    // Wrist detected in current frame
+    isTestRunning: false,   // "Start Test" active
+    
+    // Physics Data
+    lastVideoTime: -1,
     prevWrist: null,
+    velocityBuffer: [],
     
-    // Data
-    velocityHistory: [],
-    currentVelocity: 0,
-    repCount: 0,
-    repPeaks: []
+    // Metrics
+    currentVel: 0,
+    repCount: 0
 };
 
 /**
- * 1. INITIALIZATION
+ * 1. INITIALIZATION & SETUP
  */
 async function initializeApp() {
     try {
+        // DOM Setup
         state.video = document.getElementById('video');
         state.canvas = document.getElementById('canvas');
         state.ctx = state.canvas.getContext('2d');
+        const statusPill = document.getElementById('status-pill');
 
-        console.log("⏳ Loading AI...");
+        console.log("⏳ Initializing AI...");
         const visionGen = await FilesetResolver.forVisionTasks(
             "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/wasm"
         );
@@ -50,47 +53,31 @@ async function initializeApp() {
                 delegate: "GPU"
             },
             runningMode: "VIDEO",
-            numPoses: 1
+            numPoses: 1,
+            minPoseDetectionConfidence: CONFIG.CONFIDENCE,
+            minPosePresenceConfidence: CONFIG.CONFIDENCE,
+            minTrackingConfidence: CONFIG.CONFIDENCE
         });
 
-        console.log("✅ AI Ready");
+        console.log("✅ AI System Ready");
+        state.isSystemReady = true;
         document.getElementById('loading-overlay').classList.add('hidden');
-        document.getElementById('status-pill').textContent = "Ready";
+        statusPill.textContent = "Waiting for Source...";
+        statusPill.style.borderColor = "#fbbf24"; // Yellow
 
-        // Wire Buttons
+        // Wire Inputs
         document.getElementById('btn-camera').onclick = startCamera;
         document.getElementById('file-input').onchange = handleUpload;
         
-        document.getElementById('btn-start-test').onclick = () => {
-            state.isTestRunning = true;
-            state.repCount = 0;
-            state.velocityHistory = [];
-            state.prevWrist = null;
-            updateUI();
-            
-            const btn = document.getElementById('btn-start-test');
-            btn.textContent = "Test Running...";
-            btn.disabled = true;
-            document.getElementById('btn-reset').disabled = false;
-            
-            if(state.video.paused) state.video.play();
-        };
-
-        document.getElementById('btn-reset').onclick = () => {
-            state.isTestRunning = false;
-            state.repCount = 0;
-            state.currentVelocity = 0;
-            updateUI();
-            
-            const btn = document.getElementById('btn-start-test');
-            btn.textContent = "▶ Start Test";
-            btn.disabled = false;
-            document.getElementById('btn-reset').disabled = true;
-            
-            state.ctx.clearRect(0, 0, state.canvas.width, state.canvas.height);
-        };
-
+        // Wire Controls
+        document.getElementById('btn-start-test').onclick = startTest;
+        document.getElementById('btn-reset').onclick = resetTest;
+        
+        // Setup Video UI
         setupVideoControls();
+
+        // START THE RENDER LOOP (Always running, scanning for wrists)
+        requestAnimationFrame(renderLoop);
 
     } catch (e) {
         alert("Startup Error: " + e.message);
@@ -108,7 +95,7 @@ async function startCamera() {
         });
         state.video.srcObject = stream;
         state.video.src = "";
-        onVideoSourceChanged();
+        resetPhysics();
     } catch (e) {
         alert("Camera Error: " + e.message);
     }
@@ -119,147 +106,199 @@ function handleUpload(e) {
     if (!file) return;
     state.video.srcObject = null;
     state.video.src = URL.createObjectURL(file);
-    onVideoSourceChanged();
-}
-
-function onVideoSourceChanged() {
-    state.video.loop = false;
-    state.video.onloadedmetadata = () => {
-        // Sync Canvas Size to Video Source
-        state.canvas.width = state.video.videoWidth;
-        state.canvas.height = state.video.videoHeight;
-        
-        console.log(`Video Source Loaded: ${state.video.videoWidth}x${state.video.videoHeight}`);
-        
-        document.getElementById('btn-start-test').disabled = false;
-        state.isReady = true;
-        
-        // Start Render Loop
-        requestAnimationFrame(renderLoop);
-    };
-    state.video.play().catch(e => console.log("Auto-play blocked"));
+    resetPhysics();
 }
 
 /**
- * 3. MAIN PHYSICS LOOP
+ * 3. MAIN RENDER LOOP (The Heartbeat)
  */
 function renderLoop() {
-    if (!state.isReady) return;
+    if (!state.isSystemReady) {
+        requestAnimationFrame(renderLoop);
+        return;
+    }
 
-    // Only process if video is playing and time has advanced
-    if (!state.video.paused && !state.video.ended && state.video.currentTime !== state.lastFrameTime) {
+    // 1. Sync Canvas Size (Robust Check)
+    if (state.video.videoWidth > 0 && state.canvas.width !== state.video.videoWidth) {
+        state.canvas.width = state.video.videoWidth;
+        state.canvas.height = state.video.videoHeight;
+        console.log(`Canvas Resized to: ${state.canvas.width}x${state.canvas.height}`);
+    }
+
+    // 2. Frame Detection Logic
+    // We only detect if video is playing OR if it's paused but we just loaded it (for scanning)
+    if (!state.video.paused || (state.video.paused && state.lastVideoTime !== state.video.currentTime)) {
         
+        // Handle Video Loops/Seeks (Time moved backwards)
+        if (state.video.currentTime < state.lastVideoTime) {
+            console.log("↺ Time Jump Detected - Resetting Physics");
+            state.prevWrist = null;
+            state.velocityBuffer = [];
+        }
+
         let startTimeMs = performance.now();
         if (state.video.duration) {
              startTimeMs = state.video.currentTime * 1000;
         }
 
+        // EXECUTE AI
         const result = state.landmarker.detectForVideo(state.video, startTimeMs);
         
+        // CLEAR CANVAS
         state.ctx.clearRect(0, 0, state.canvas.width, state.canvas.height);
         
+        // PROCESS RESULTS
         if (result.landmarks && result.landmarks.length > 0) {
-            const landmarks = result.landmarks[0];
-            const wrist = landmarks[CONFIG.WRIST_INDEX];
+            const wrist = result.landmarks[0][CONFIG.WRIST_INDEX];
             
             if (wrist) {
-                // Draw Tracking Dot
-                drawDot(wrist);
+                state.isWristFound = true;
+                updateStatus(true);
+                drawWrist(wrist);
                 
-                // Calculate Physics if Test is Running
+                // Only calculate numbers if TEST IS RUNNING
                 if (state.isTestRunning) {
-                    processPhysics(wrist, startTimeMs);
+                    calculatePhysics(wrist, startTimeMs);
                 }
+            } else {
+                state.isWristFound = false;
+                updateStatus(false);
             }
+        } else {
+            state.isWristFound = false;
+            updateStatus(false);
         }
-        state.lastFrameTime = state.video.currentTime;
+        
+        state.lastVideoTime = state.video.currentTime;
     }
     
     requestAnimationFrame(renderLoop);
 }
 
-function processPhysics(wrist, time) {
-    // Normalize coordinates to pixels
+/**
+ * 4. PHYSICS ENGINE
+ */
+function calculatePhysics(wrist, time) {
     const x = wrist.x * state.canvas.width;
     const y = wrist.y * state.canvas.height;
     
     if (state.prevWrist) {
         const dx = x - state.prevWrist.x;
         const dy = y - state.prevWrist.y;
-        const dist = Math.sqrt(dx*dx + dy*dy);
+        const distPx = Math.sqrt(dx*dx + dy*dy);
         
-        // Time delta (seconds)
+        // Time Delta (seconds)
         const dt = (time - state.prevWrist.time) / 1000;
         
-        // Simple Calibration (Assuming width = 1.5m visible area for now)
-        // Ideally we calibrate on shoulders, but this is a robust fallback
-        const pixelsPerMeter = state.canvas.width / 1.5; 
+        // Calibration: Assume width of view is ~2 meters (Standard gym shot)
+        const pxPerMeter = state.canvas.width / 2.0;
         
-        if (dt > 0.01) {
-            const vel = (dist / pixelsPerMeter) / dt;
+        if (dt > 0.005) { // Avoid divide-by-zero on tiny steps
+            const rawVel = (distPx / pxPerMeter) / dt;
             
             // Smoothing
-            state.velocityHistory.push(vel);
-            if (state.velocityHistory.length > CONFIG.SMOOTHING_WINDOW) state.velocityHistory.shift();
+            state.velocityBuffer.push(rawVel);
+            if (state.velocityBuffer.length > CONFIG.SMOOTHING) state.velocityBuffer.shift();
             
-            state.currentVelocity = state.velocityHistory.reduce((a,b)=>a+b)/state.velocityHistory.length;
+            state.currentVel = state.velocityBuffer.reduce((a,b)=>a+b) / state.velocityBuffer.length;
             
-            // Simple Rep Detection (Velocity Zero-Crossing logic could go here)
-            // For now, just show velocity
-            updateUI();
+            updateMetrics();
         }
     }
+    
     state.prevWrist = { x, y, time };
 }
 
-function drawDot(wrist) {
-    const x = wrist.x * state.canvas.width;
-    const y = wrist.y * state.canvas.height;
-    state.ctx.fillStyle = "#ef4444";
+function drawWrist(wrist) {
+    const cx = wrist.x * state.canvas.width;
+    const cy = wrist.y * state.canvas.height;
+    
+    // Outer Glow
     state.ctx.beginPath();
-    state.ctx.arc(x, y, 10, 0, 2 * Math.PI);
+    state.ctx.arc(cx, cy, 15, 0, 2*Math.PI);
+    state.ctx.fillStyle = "rgba(16, 185, 129, 0.3)"; // Green Glow
+    state.ctx.fill();
+    
+    // Core Dot
+    state.ctx.beginPath();
+    state.ctx.arc(cx, cy, 6, 0, 2*Math.PI);
+    state.ctx.fillStyle = "#10b981"; // Green-500
     state.ctx.fill();
 }
 
 /**
- * 4. UI UPDATES
+ * 5. UI & CONTROLS
  */
-function updateUI() {
-    document.getElementById('val-velocity').textContent = state.currentVelocity.toFixed(2);
-    document.getElementById('val-reps').textContent = state.repCount;
+function startTest() {
+    if (!state.isWristFound) {
+        alert("⚠️ Cannot start: No wrist detected. Please adjust camera/video.");
+        return;
+    }
+    state.isTestRunning = true;
+    state.velocityBuffer = [];
+    state.prevWrist = null; // Reset prev position to avoid huge velocity jump
+    
+    document.getElementById('btn-start-test').disabled = true;
+    document.getElementById('btn-start-test').textContent = "Running...";
+    document.getElementById('btn-reset').disabled = false;
+    
+    if (state.video.paused) state.video.play();
 }
 
+function resetTest() {
+    state.isTestRunning = false;
+    resetPhysics();
+    document.getElementById('btn-start-test').disabled = false;
+    document.getElementById('btn-start-test').textContent = "▶ Start Test";
+    document.getElementById('val-velocity').textContent = "0.00";
+    
+    // Pause video to let user reset
+    state.video.pause();
+    state.video.currentTime = 0;
+}
+
+function resetPhysics() {
+    state.prevWrist = null;
+    state.velocityBuffer = [];
+    state.currentVel = 0;
+    state.lastVideoTime = -1;
+}
+
+function updateStatus(found) {
+    const pill = document.getElementById('status-pill');
+    if (found) {
+        pill.textContent = "Wrist Detected ✓";
+        pill.style.borderColor = "#10b981"; // Green
+        pill.style.color = "#10b981";
+    } else {
+        pill.textContent = "Searching...";
+        pill.style.borderColor = "#ef4444"; // Red
+        pill.style.color = "#ef4444";
+    }
+}
+
+function updateMetrics() {
+    document.getElementById('val-velocity').textContent = state.currentVel.toFixed(2);
+}
+
+// VIDEO CONTROLS WIRING (Same as before)
 function setupVideoControls() {
-    const video = state.video;
-    const playBtn = document.getElementById('btn-play-pause');
-    const seekBar = document.getElementById('seek-bar');
-    const timeDisplay = document.getElementById('time-display');
-
-    playBtn.onclick = (e) => {
+    const btn = document.getElementById('btn-play-pause');
+    const bar = document.getElementById('seek-bar');
+    
+    btn.onclick = (e) => {
         e.preventDefault();
-        if (video.paused) {
-            video.play();
-            playBtn.textContent = "⏸";
-        } else {
-            video.pause();
-            playBtn.textContent = "▶";
-        }
+        state.video.paused ? state.video.play() : state.video.pause();
     };
-
-    seekBar.oninput = (e) => {
-        video.currentTime = e.target.value;
-    };
-
-    video.ontimeupdate = () => {
-        if (!isNaN(video.duration)) {
-            seekBar.max = video.duration;
-            seekBar.value = video.currentTime;
-            const mins = Math.floor(video.currentTime / 60);
-            const secs = Math.floor(video.currentTime % 60).toString().padStart(2, '0');
-            timeDisplay.textContent = `${mins}:${secs}`;
-        }
+    
+    bar.oninput = (e) => { state.video.currentTime = e.target.value; };
+    
+    state.video.ontimeupdate = () => {
+        bar.max = state.video.duration || 100;
+        bar.value = state.video.currentTime;
+        btn.textContent = state.video.paused ? "▶" : "⏸";
     };
 }
 
-// Start
+// BOOTSTRAP
 initializeApp();
