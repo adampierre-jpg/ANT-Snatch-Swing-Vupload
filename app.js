@@ -1,18 +1,12 @@
 import { PoseLandmarker, FilesetResolver } from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/vision_bundle.mjs";
 
 const CONFIG = {
-    // LANDMARKS (Right Side Defaults)
     WRIST_ID: 16,
     SHOULDER_ID: 12,
     HIP_ID: 24,
-    
-    // PHYSICS
     SMOOTHING: 3,
-    MIN_ROM: 0.3, // Minimum vertical Range of Motion (meters) to count as a rep
-    
-    // ALERTS
-    DROP_WARN: 15, // 15% drop
-    DROP_FAIL: 20  // 20% drop
+    DROP_WARN: 15,
+    DROP_FAIL: 20
 };
 
 let state = {
@@ -21,20 +15,22 @@ let state = {
     canvas: null,
     ctx: null,
     landmarker: null,
+    
+    // Flags
     isModelLoaded: false,
     isVideoReady: false,
     isTestRunning: false,
     
-    // Tracking Data
+    // Logic Data
     prevWrist: null,
-    velocityBuffer: [],
-    
-    // RECOVERY / COACHING STATE
-    phase: 'IDLE', // Phases: IDLE -> BOTTOM -> CONCENTRIC -> LOCKOUT
+    phase: 'IDLE',
     repCount: 0,
     currentRepPeak: 0,
     repHistory: [],
-    baseline: 0
+    baseline: 0,
+    
+    // Visual Cache (To redraw lines when paused)
+    lastLandmarks: null
 };
 
 async function initializeApp() {
@@ -43,7 +39,7 @@ async function initializeApp() {
         state.canvas = document.getElementById('canvas');
         state.ctx = state.canvas.getContext('2d');
         
-        console.log("🚀 Starting Biomechanics Engine...");
+        console.log("🚀 Starting App...");
         
         const visionGen = await FilesetResolver.forVisionTasks(
             "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/wasm"
@@ -62,15 +58,17 @@ async function initializeApp() {
         document.getElementById('loading-overlay').classList.add('hidden');
         document.getElementById('status-pill').textContent = "Ready";
 
+        // Wiring
         document.getElementById('btn-camera').onclick = startCamera;
         document.getElementById('file-input').onchange = handleUpload;
         
         state.video.addEventListener('loadeddata', onVideoReady);
-        state.video.addEventListener('seeked', () => {
-             if(state.isVideoReady) processFrame(state.video.currentTime * 1000);
-        });
+        state.video.addEventListener('seeked', forceSingleScan); // Force scan on reset/scrub
         
         setupControls();
+        
+        // START PERMANENT UI LOOP
+        requestAnimationFrame(uiLoop);
 
     } catch (e) { alert(e.message); }
 }
@@ -98,111 +96,103 @@ function onVideoReady() {
     state.isVideoReady = true;
     state.canvas.width = state.video.videoWidth;
     state.canvas.height = state.video.videoHeight;
-    processFrame(0); 
+    forceSingleScan(); // Scan frame 0 immediately
     document.getElementById('btn-start-test').disabled = false;
     document.getElementById('status-pill').textContent = "Video Loaded";
 }
 
-function renderLoop(now, metadata) {
-    if (!state.video.paused) {
-        processFrame(metadata.mediaTime * 1000);
-        state.video.requestVideoFrameCallback(renderLoop);
+function forceSingleScan() {
+    if(!state.isModelLoaded || !state.isVideoReady) return;
+    // Process current frame (even if paused)
+    const timeMs = state.video.currentTime * 1000;
+    const result = state.landmarker.detectForVideo(state.video, timeMs);
+    if(result.landmarks && result.landmarks.length > 0) {
+        state.lastLandmarks = result.landmarks[0]; // Cache for UI Loop
     }
 }
 
-// --- NEW PROCESSING LOGIC ---
-function processFrame(timeMs) {
-    if (!state.isModelLoaded || !state.isVideoReady) return;
+// --- THE PERMANENT LOOP ---
+// Runs 60fps regardless of video state to keep lines/dots visible
+function uiLoop() {
+    // 1. If playing, run detection (AI)
+    if (!state.video.paused && state.isModelLoaded && state.isVideoReady) {
+        const result = state.landmarker.detectForVideo(state.video, performance.now());
+        if(result.landmarks && result.landmarks.length > 0) {
+            state.lastLandmarks = result.landmarks[0];
+            
+            // Run Physics ONLY during playback
+            if(state.isTestRunning) {
+                runBiomechanics(state.lastLandmarks, state.video.currentTime * 1000);
+            }
+        }
+    }
 
-    const result = state.landmarker.detectForVideo(state.video, timeMs);
+    // 2. Always Draw (Visuals)
+    drawEverything();
+    
+    requestAnimationFrame(uiLoop);
+}
+
+function drawEverything() {
+    // Clear
     state.ctx.clearRect(0, 0, state.canvas.width, state.canvas.height);
     
-    if (result.landmarks && result.landmarks.length > 0) {
-        const pose = result.landmarks[0];
-        
-        // Extract Key Points
+    if (state.lastLandmarks) {
+        const pose = state.lastLandmarks;
         const wrist = pose[CONFIG.WRIST_ID];
         const shoulder = pose[CONFIG.SHOULDER_ID];
         const hip = pose[CONFIG.HIP_ID];
 
         if (wrist && shoulder && hip) {
-            // Visualize Zones
             drawZones(shoulder, hip);
             drawDot(wrist);
-            
-            if (state.isTestRunning) {
-                runBiomechanicsEngine(wrist, shoulder, hip, timeMs);
-            }
         }
     }
 }
 
-function runBiomechanicsEngine(wrist, shoulder, hip, time) {
-    // 1. Calculate Velocity (Standard VBT Math)
+function runBiomechanics(pose, time) {
+    const wrist = pose[CONFIG.WRIST_ID];
+    const shoulder = pose[CONFIG.SHOULDER_ID];
+    const hip = pose[CONFIG.HIP_ID];
+    
     if (!state.prevWrist) {
         state.prevWrist = { x: wrist.x, y: wrist.y, time: time };
         return;
     }
 
     const dt = (time - state.prevWrist.time) / 1000;
-    if (dt <= 0.0001 || dt > 1.0) return; // Guard
+    if (dt <= 0.001) return;
 
-    // Convert normalized coords to pixels
+    // Calc Velocity
     const dx = (wrist.x - state.prevWrist.x) * state.canvas.width;
     const dy = (wrist.y - state.prevWrist.y) * state.canvas.height;
     const distPx = Math.sqrt(dx*dx + dy*dy);
-    
-    // Calibration (Auto-scale: Assume distance from Shoulder to Hip is 0.5m)
-    // This is better than fixed width calibration as it scales with the subject
     const bodySegmentPx = Math.abs(shoulder.y - hip.y) * state.canvas.height;
-    const pixelsPerMeter = bodySegmentPx / 0.5; // Approx 0.5m torso length
-    
+    const pixelsPerMeter = bodySegmentPx / 0.5; 
     const velocity = (distPx / pixelsPerMeter) / dt;
 
-    // Update Live View
     document.getElementById('val-velocity').textContent = velocity.toFixed(2);
     
-    // 2. STATE MACHINE (The "Snatch" Logic)
-    // Y-Coordinate: 0 is TOP, 1 is BOTTOM.
-    // So "Higher than shoulder" means wrist.y < shoulder.y
-    
+    // State Machine
     const isBelowHip = wrist.y > hip.y;
     const isAboveShoulder = wrist.y < shoulder.y;
     
-    // STATE 1: WAITING IN THE HOLE (Backswing/Start)
     if (state.phase === 'IDLE' || state.phase === 'LOCKOUT') {
         if (isBelowHip) {
             state.phase = 'BOTTOM';
-            document.getElementById('val-velocity').style.color = "#fbbf24"; // Yellow (Ready)
+            document.getElementById('val-velocity').style.color = "#fbbf24";
         }
-    }
-    
-    // STATE 2: EXPLOSION (Concentric)
-    else if (state.phase === 'BOTTOM') {
-        // If we move UP past the hip, the rep has started
+    } else if (state.phase === 'BOTTOM') {
         if (wrist.y < hip.y) {
             state.phase = 'CONCENTRIC';
-            state.currentRepPeak = 0; // Reset peak for this new rep
-            document.getElementById('val-velocity').style.color = "#3b82f6"; // Blue (Go!)
+            state.currentRepPeak = 0;
+            document.getElementById('val-velocity').style.color = "#3b82f6";
         }
-    }
-    
-    // STATE 3: TRACKING THE PEAK
-    else if (state.phase === 'CONCENTRIC') {
-        // Track Max Velocity during upward phase
-        if (velocity > state.currentRepPeak) {
-            state.currentRepPeak = velocity;
-        }
+    } else if (state.phase === 'CONCENTRIC') {
+        if (velocity > state.currentRepPeak) state.currentRepPeak = velocity;
         
-        // STATE 4: LOCKOUT (Finish)
-        // Must be above shoulder AND velocity must drop (pause overhead)
-        if (isAboveShoulder && velocity < 0.5) {
-            finishRep();
-        }
-        // Fail-safe: If they drop the bell back below hip without locking out
-        else if (isBelowHip) {
-            state.phase = 'BOTTOM'; // Reset without counting rep
-        }
+        if (isAboveShoulder && velocity < 0.5) finishRep();
+        else if (isBelowHip) state.phase = 'BOTTOM';
     }
 
     state.prevWrist = { x: wrist.x, y: wrist.y, time: time };
@@ -213,19 +203,15 @@ function finishRep() {
     state.repCount++;
     state.repHistory.push(state.currentRepPeak);
     
-    // Update UI
     document.getElementById('val-reps').textContent = state.repCount;
     document.getElementById('val-peak').textContent = state.currentRepPeak.toFixed(2);
-    document.getElementById('val-velocity').style.color = "#10b981"; // Green (Good Rep)
+    document.getElementById('val-velocity').style.color = "#10b981";
 
-    // Calculate Drop-off
     if (state.repCount <= 3) {
-        // Build Baseline
         const sum = state.repHistory.reduce((a, b) => a + b, 0);
         state.baseline = sum / state.repHistory.length;
         document.getElementById('val-drop').textContent = "CALC...";
     } else {
-        // Compare to Baseline
         const drop = (state.baseline - state.currentRepPeak) / state.baseline;
         const dropPct = (drop * 100).toFixed(1);
         const dropEl = document.getElementById('val-drop');
@@ -237,24 +223,21 @@ function finishRep() {
     }
 }
 
-// --- VISUALS ---
 function drawZones(shoulder, hip) {
     const ctx = state.ctx;
     const w = state.canvas.width;
     const h = state.canvas.height;
     
-    // Draw "Lockout Line" (Shoulder Height)
     const shoulderY = shoulder.y * h;
-    ctx.strokeStyle = "rgba(16, 185, 129, 0.3)"; // Green Line
+    ctx.strokeStyle = "rgba(16, 185, 129, 0.5)"; 
     ctx.lineWidth = 2;
     ctx.beginPath();
     ctx.moveTo(0, shoulderY);
     ctx.lineTo(w, shoulderY);
     ctx.stroke();
     
-    // Draw "Start Line" (Hip Height)
     const hipY = hip.y * h;
-    ctx.strokeStyle = "rgba(59, 130, 246, 0.3)"; // Blue Line
+    ctx.strokeStyle = "rgba(59, 130, 246, 0.5)"; 
     ctx.beginPath();
     ctx.moveTo(0, hipY);
     ctx.lineTo(w, hipY);
@@ -277,8 +260,8 @@ function hardResetState() {
     state.phase = 'IDLE';
     state.repHistory = [];
     state.baseline = 0;
+    // Don't clear lastLandmarks here, so we still see the pose while waiting
     
-    state.ctx.clearRect(0, 0, state.canvas.width, state.canvas.height);
     document.getElementById('val-velocity').textContent = "0.00";
     document.getElementById('val-peak').textContent = "0.00";
     document.getElementById('val-reps').textContent = "0";
@@ -299,18 +282,17 @@ function setupControls() {
         startBtn.disabled = true;
         resetBtn.disabled = false;
         
-        state.phase = 'IDLE'; // Reset phase logic
+        state.phase = 'IDLE'; 
         state.repCount = 0;
         state.repHistory = [];
         
         state.video.play();
-        state.video.requestVideoFrameCallback(renderLoop);
     };
 
     resetBtn.onclick = () => {
         state.video.pause();
         hardResetState();
-        state.video.currentTime = 0;
+        state.video.currentTime = 0; // Triggers 'seeked' -> forceSingleScan
     };
 }
 
