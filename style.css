@@ -77,8 +77,7 @@ canvas {
     align-items: center;
     gap: 10px;
     z-index: 10; /* Highest layer = always clickable */
-    opacity: 0;
-    transition: opacity 0.3s;
+    
 }
 
 /* Show controls when hovering over the video container */
