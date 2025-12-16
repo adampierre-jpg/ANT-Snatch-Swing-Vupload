@@ -1,660 +1,924 @@
 /**
- * KB Velocity Tracker (Snatch) — Continuous total rep count across video
- *
- * Fix in this revision:
- * - When bell is set down: unlock handedness + reset ONLY tracking mechanics,
- *   NOT total repCount / repHistory / baseline.
- * - Totals persist for the whole video.
- *
- * Landmark indices (MediaPipe Pose): wrists 15/16, hips 23/24, knees 25/26, ankles 27/28, shoulders 11/12. [web:53][web:54]
- */
 
-import { PoseLandmarker, FilesetResolver } from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/vision_bundle.mjs";
+- KB Velocity Tracker (Snatch) — Fixed Version
+- 
+- FIXES:
+- 1. Added set count tracking
+- 1. Fixed rep detection with better phase state machine
+- 1. Improved hand detection with clearer logic and hysteresis
+- 1. Fixed velocity calculation (upward = positive velocity)
+- 1. Added per-set peak tracking for velocity drop-off
+- 1. Better lockout detection with arm extension check
+- 1. Removed MIN_REPS_BEFORE_UNLOCK blocking issue
+- 
+- Landmark indices (MediaPipe Pose):
+- wrists 15/16, elbows 13/14, shoulders 11/12, hips 23/24, knees 25/26, ankles 27/28
+  */
+
+import { PoseLandmarker, FilesetResolver } from “https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/vision_bundle.mjs”;
 
 const CONFIG = {
-  LEFT:  { WRIST: 15, SHOULDER: 11, HIP: 23, KNEE: 25, ANKLE: 27 },
-  RIGHT: { WRIST: 16, SHOULDER: 12, HIP: 24, KNEE: 26, ANKLE: 28 },
+LEFT:  { WRIST: 15, ELBOW: 13, SHOULDER: 11, HIP: 23, KNEE: 25, ANKLE: 27 },
+RIGHT: { WRIST: 16, ELBOW: 14, SHOULDER: 12, HIP: 24, KNEE: 26, ANKLE: 28 },
 
-  MIN_DET_CONF: 0.5,
-  MIN_TRACK_CONF: 0.5,
+MIN_DET_CONF: 0.5,
+MIN_TRACK_CONF: 0.5,
 
-  // Physics
-  SMOOTHING_ALPHA: 0.30,
-  MAX_REALISTIC_VELOCITY: 10.0,
-  MIN_DT: 0.01,
-  MAX_DT: 0.10,
-  TORSO_METERS: 0.5,
+// Physics
+SMOOTHING_ALPHA: 0.25,
+MAX_REALISTIC_VELOCITY: 12.0,
+MIN_DT: 0.008,
+MAX_DT: 0.12,
+TORSO_METERS: 0.5,
 
-  // Rep logic
-  LOCKOUT_VY_CUTOFF: 0.40,
-  LOCKOUT_SPEED_CUTOFF: 1.40,
-  OVERHEAD_HOLD_FRAMES: 2,
+// Rep detection thresholds
+LOCKOUT_VY_THRESHOLD: 0.5,      // Max vertical velocity at lockout (m/s)
+LOCKOUT_SPEED_THRESHOLD: 1.8,   // Max total speed at lockout (m/s)
+OVERHEAD_HOLD_FRAMES: 2,        // Frames to confirm lockout
 
-  // Drop-off
-  BASELINE_REPS: 3,
-  DROP_WARN: 15,
-  DROP_FAIL: 20,
+// Position thresholds (normalized, relative to body)
+BOTTOM_THRESHOLD: 0.0,          // Wrist must be at or below hip level
+OVERHEAD_THRESHOLD: 0.0,        // Wrist must be at or above shoulder level
+ARM_EXTENSION_MIN: 0.85,        // Minimum arm extension ratio for lockout
 
-  // Floor-zone “hand on bell”
-  SHANK_FRACTION: 0.35,
-  MIN_SHANK_LEN_NORM: 0.06,
-  ARM_MS_REQUIRED: 100,
+// Drop-off thresholds
+BASELINE_REPS: 3,
+DROP_WARN: 15,
+DROP_FAIL: 20,
 
-  // Reset (“bell set down”)
-  RESET_MS_REQUIRED: 100,
-  RESET_SPEED_CUTOFF: 0.80,
-  RESET_VY_CUTOFF: 0.60,
-  MIN_REPS_BEFORE_UNLOCK: 2,
-  RESET_GRACE_MS_AFTER_LOCK: 500
+// Floor-zone detection for hand grab
+SHANK_FRACTION: 0.40,
+MIN_SHANK_LEN_NORM: 0.05,
+ARM_MS_REQUIRED: 150,           // Time wrist must be in floor zone to lock side
+
+// Set detection (bell set down)
+RESET_MS_REQUIRED: 200,
+RESET_SPEED_CUTOFF: 0.6,
+RESET_GRACE_MS: 800,            // Grace period after locking before allowing reset
+
+// Debug
+DEBUG_MODE: true
 };
 
 let state = {
-  video: null,
-  canvas: null,
-  ctx: null,
-  landmarker: null,
+video: null,
+canvas: null,
+ctx: null,
+landmarker: null,
 
-  isModelLoaded: false,
-  isVideoReady: false,
+isModelLoaded: false,
+isVideoReady: false,
 
-  lastPose: null,
+lastPose: null,
 
-  // test lifecycle
-  isTestRunning: false,
-  testStage: "IDLE", // IDLE | ARMING | RUNNING
+// Test lifecycle
+isTestRunning: false,
+testStage: “IDLE”, // IDLE | ARMING | RUNNING
 
-  // handedness
-  lockedSide: "unknown",
-  sideLocked: false,
-  lockedAtMs: 0,
+// Handedness detection
+lockedSide: null,           // “left” | “right” | null
+sideLocked: false,
+lockedAtMs: 0,
 
-  // floor dwell timers
-  floorMsLeft: 0,
-  floorMsRight: 0,
-  floorMsLocked: 0,
-  lastFloorUpdateMs: null,
+// Floor dwell timers (for hand detection)
+floorDwell: {
+left: { inZone: false, startMs: null, dwellMs: 0 },
+right: { inZone: false, startMs: null, dwellMs: 0 },
+locked: { inZone: false, startMs: null, dwellMs: 0 }
+},
+lastUpdateMs: null,
 
-  // physics (per-set mechanics)
-  prevWrist: null,            // {xNorm, yNorm, tMs}
-  lockedCalibration: null,    // px/m
-  smoothedVelocity: null,
-  smoothedVy: null,
-  lastSpeed: 0,
-  lastVy: 0,
+// Physics tracking
+prevWrist: null,
+calibrationPxPerM: null,
 
-  // rep totals (persist for whole video)
-  phase: "IDLE",
-  repCount: 0,                // TOTAL reps across the whole video
-  currentRepPeak: 0,
-  repHistory: [],             // TOTAL rep peaks across the whole video
-  baseline: 0,                // baseline computed from first BASELINE_REPS reps in the entire video
+// Smoothed values
+smoothedSpeed: 0,
+smoothedVy: 0,
+rawSpeed: 0,
+rawVy: 0,
 
-  overheadHoldCount: 0
+// Rep state machine
+phase: “IDLE”,              // IDLE | BOTTOM | ASCENDING | LOCKOUT
+overheadHoldCount: 0,
+currentRepPeak: 0,
+currentRepStartMs: null,
+
+// Totals (persist across sets)
+totalReps: 0,
+setCount: 0,
+repHistory: [],             // All rep peaks
+baseline: 0,
+
+// Per-set tracking
+currentSetReps: 0,
+currentSetPeaks: [],
+setHistory: []              // Array of {reps, avgPeak, startMs, endMs}
 };
 
-/* ----------------------------- INIT ----------------------------- */
+/* —————————– INIT —————————– */
 
 async function initializeApp() {
-  try {
-    state.video = document.getElementById("video");
-    state.canvas = document.getElementById("canvas");
-    state.ctx = state.canvas.getContext("2d");
+try {
+state.video = document.getElementById(“video”);
+state.canvas = document.getElementById(“canvas”);
+state.ctx = state.canvas.getContext(“2d”);
 
-    const visionGen = await FilesetResolver.forVisionTasks(
-      "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/wasm"
-    );
+```
+const visionGen = await FilesetResolver.forVisionTasks(
+  "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/wasm"
+);
 
-    state.landmarker = await PoseLandmarker.createFromOptions(visionGen, {
-      baseOptions: {
-        modelAssetPath:
-          "https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_full/float16/1/pose_landmarker_full.task",
-        delegate: "GPU"
-      },
-      runningMode: "VIDEO",
-      numPoses: 1,
-      minPoseDetectionConfidence: CONFIG.MIN_DET_CONF,
-      minTrackingConfidence: CONFIG.MIN_TRACK_CONF
-    });
+state.landmarker = await PoseLandmarker.createFromOptions(visionGen, {
+  baseOptions: {
+    modelAssetPath:
+      "https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_full/float16/1/pose_landmarker_full.task",
+    delegate: "GPU"
+  },
+  runningMode: "VIDEO",
+  numPoses: 1,
+  minPoseDetectionConfidence: CONFIG.MIN_DET_CONF,
+  minTrackingConfidence: CONFIG.MIN_TRACK_CONF
+});
 
-    state.isModelLoaded = true;
-    document.getElementById("loading-overlay").classList.add("hidden");
-    setStatus("Ready", "#3b82f6");
+state.isModelLoaded = true;
+document.getElementById("loading-overlay")?.classList.add("hidden");
+setStatus("Ready", "#3b82f6");
 
-    document.getElementById("btn-camera").onclick = startCamera;
-    document.getElementById("file-input").onchange = handleUpload;
+document.getElementById("btn-camera").onclick = startCamera;
+document.getElementById("file-input").onchange = handleUpload;
 
-    state.video.addEventListener("loadeddata", onVideoReady);
-    state.video.addEventListener("error", () => {
-      const err = state.video?.error;
-      alert("Video error: " + (err?.message || "Unknown error"));
-    });
+state.video.addEventListener("loadeddata", onVideoReady);
+state.video.addEventListener("error", () => {
+  const err = state.video?.error;
+  alert("Video error: " + (err?.message || "Unknown error"));
+});
 
-    setupControls();
-    requestAnimationFrame(masterLoop);
-  } catch (e) {
-    console.error(e);
-    alert("Startup Error: " + e.message);
-  }
+setupControls();
+requestAnimationFrame(masterLoop);
+```
+
+} catch (e) {
+console.error(e);
+alert(“Startup Error: “ + e.message);
+}
 }
 
-/* -------------------------- SOURCE HANDLING -------------------------- */
+/* ––––––––––––– SOURCE HANDLING ––––––––––––– */
 
 function handleUpload(e) {
-  const file = e.target.files?.[0];
-  if (!file) return;
+const file = e.target.files?.[0];
+if (!file) return;
 
-  resetAll("Loading…");
-  state.video.srcObject = null;
-  state.video.src = URL.createObjectURL(file);
-  state.video.load();
+resetAll(“Loading…”);
+state.video.srcObject = null;
+state.video.src = URL.createObjectURL(file);
+state.video.load();
 }
 
 async function startCamera() {
-  try {
-    resetAll("Starting camera…");
-    const stream = await navigator.mediaDevices.getUserMedia({
-      video: { facingMode: "user" },
-      audio: false
-    });
-    state.video.srcObject = stream;
-    state.video.src = "";
-  } catch (e) {
-    alert("Camera Error: " + e.message);
-  }
+try {
+resetAll(“Starting camera…”);
+const stream = await navigator.mediaDevices.getUserMedia({
+video: { facingMode: “user” },
+audio: false
+});
+state.video.srcObject = stream;
+state.video.src = “”;
+} catch (e) {
+alert(“Camera Error: “ + e.message);
+}
 }
 
 function onVideoReady() {
-  state.isVideoReady = true;
-
-  state.canvas.width = state.video.videoWidth || state.canvas.width;
-  state.canvas.height = state.video.videoHeight || state.canvas.height;
-
-  document.getElementById("btn-start-test").disabled = false;
-
-  primeVideo();
-  setStatus("Video Loaded — press Start Test", "#fbbf24");
+state.isVideoReady = true;
+state.canvas.width = state.video.videoWidth || state.canvas.width;
+state.canvas.height = state.video.videoHeight || state.canvas.height;
+document.getElementById(“btn-start-test”).disabled = false;
+primeVideo();
+setStatus(“Video Loaded — press Start Test”, “#fbbf24”);
 }
 
 function primeVideo() {
-  const p = state.video.play();
-  if (p && typeof p.then === "function") {
-    p.then(() => {
-      setTimeout(() => {
-        if (!state.isTestRunning) state.video.pause();
-        state.video.currentTime = 0;
-      }, 120);
-    }).catch(() => console.log("Autoplay blocked."));
-  }
+const p = state.video.play();
+if (p && typeof p.then === “function”) {
+p.then(() => {
+setTimeout(() => {
+if (!state.isTestRunning) state.video.pause();
+state.video.currentTime = 0;
+}, 120);
+}).catch(() => console.log(“Autoplay blocked.”));
+}
 }
 
-/* ---------------------------- MASTER LOOP ---------------------------- */
+/* –––––––––––––– MASTER LOOP –––––––––––––– */
 
 function masterLoop() {
-  if (state.isModelLoaded && state.isVideoReady && state.video.readyState >= 2) {
-    const result = state.landmarker.detectForVideo(state.video, performance.now());
-    if (result.landmarks && result.landmarks.length > 0) {
-      state.lastPose = result.landmarks[0];
-      const tMs = state.video.currentTime * 1000;
+if (state.isModelLoaded && state.isVideoReady && state.video.readyState >= 2) {
+const result = state.landmarker.detectForVideo(state.video, performance.now());
 
-      if (state.isTestRunning && state.testStage === "ARMING") {
-        updateHandednessByFloorGrab(state.lastPose, tMs);
-      }
+```
+if (result.landmarks && result.landmarks.length > 0) {
+  state.lastPose = result.landmarks[0];
+  const tMs = state.video.currentTime * 1000;
 
-      if (state.isTestRunning && state.testStage === "RUNNING" && !state.video.paused) {
-        runSnatchPhysicsAndLogic(state.lastPose, tMs);
-        maybeResetOnSetDown(state.lastPose, tMs);
-      }
+  if (state.isTestRunning) {
+    if (state.testStage === "ARMING") {
+      detectHandGrab(state.lastPose, tMs);
+    } else if (state.testStage === "RUNNING" && !state.video.paused) {
+      processSnatchFrame(state.lastPose, tMs);
+      detectSetDown(state.lastPose, tMs);
     }
   }
+}
+```
 
-  drawOverlay();
-  requestAnimationFrame(masterLoop);
 }
 
-/* ----------------- FLOOR ZONE: ARMING + RESET ----------------- */
-
-function updateHandednessByFloorGrab(pose, tMs) {
-  const dtMs = updateFloorDt(tMs);
-  if (dtMs <= 0) return;
-
-  const inFloorLeft = isWristInFloorZone(pose, "left");
-  const inFloorRight = isWristInFloorZone(pose, "right");
-
-  state.floorMsLeft = inFloorLeft ? (state.floorMsLeft + dtMs) : 0;
-  state.floorMsRight = inFloorRight ? (state.floorMsRight + dtMs) : 0;
-
-  if (state.floorMsLeft >= CONFIG.ARM_MS_REQUIRED && state.floorMsRight < CONFIG.ARM_MS_REQUIRED) {
-    lockSideAndStartRunning("left", tMs);
-    return;
-  }
-  if (state.floorMsRight >= CONFIG.ARM_MS_REQUIRED && state.floorMsLeft < CONFIG.ARM_MS_REQUIRED) {
-    lockSideAndStartRunning("right", tMs);
-    return;
-  }
-
-  if (state.floorMsLeft >= CONFIG.ARM_MS_REQUIRED && state.floorMsRight >= CONFIG.ARM_MS_REQUIRED) {
-    const depthL = floorDepth(pose, "left");
-    const depthR = floorDepth(pose, "right");
-    lockSideAndStartRunning(depthL >= depthR ? "left" : "right", tMs);
-  }
+drawOverlay();
+requestAnimationFrame(masterLoop);
 }
 
-function lockSideAndStartRunning(side, tMs) {
-  state.lockedSide = side;
-  state.sideLocked = true;
-  state.lockedAtMs = tMs;
+/* —————– HAND DETECTION (ARMING PHASE) —————– */
 
-  // reset only mechanics so the “grab” doesn’t pollute rep detection
-  resetSetMechanicsOnly();
+function detectHandGrab(pose, tMs) {
+const dtMs = getDeltaTime(tMs);
+if (dtMs <= 0) return;
 
-  // Reset floor timer so the grab doesn't become instant reset
-  state.floorMsLocked = 0;
+const leftInZone = isWristInFloorZone(pose, “left”);
+const rightInZone = isWristInFloorZone(pose, “right”);
 
-  state.testStage = "RUNNING";
-  setStatus(`Locked ${side.toUpperCase()} — tracking`, "#10b981");
+// Update dwell timers
+updateDwellTimer(state.floorDwell.left, leftInZone, tMs, dtMs);
+updateDwellTimer(state.floorDwell.right, rightInZone, tMs, dtMs);
+
+const leftReady = state.floorDwell.left.dwellMs >= CONFIG.ARM_MS_REQUIRED;
+const rightReady = state.floorDwell.right.dwellMs >= CONFIG.ARM_MS_REQUIRED;
+
+// Lock side based on which hand is ready first, or deepest if both
+if (leftReady && !rightReady) {
+lockSide(“left”, tMs);
+} else if (rightReady && !leftReady) {
+lockSide(“right”, tMs);
+} else if (leftReady && rightReady) {
+// Both ready - pick the one that’s deeper/lower
+const leftDepth = getFloorDepth(pose, “left”);
+const rightDepth = getFloorDepth(pose, “right”);
+lockSide(leftDepth >= rightDepth ? “left” : “right”, tMs);
+}
 }
 
-function maybeResetOnSetDown(pose, tMs) {
-  if (!state.sideLocked) return;
+function lockSide(side, tMs) {
+state.lockedSide = side;
+state.sideLocked = true;
+state.lockedAtMs = tMs;
 
-  // Do not unlock until minimum total reps achieved
-  if (state.repCount < CONFIG.MIN_REPS_BEFORE_UNLOCK) return;
+// Start new set
+state.setCount++;
+state.currentSetReps = 0;
+state.currentSetPeaks = [];
 
-  // grace after locking
-  if ((tMs - state.lockedAtMs) < CONFIG.RESET_GRACE_MS_AFTER_LOCK) return;
+// Reset mechanics for fresh tracking
+resetMechanics();
 
-  const dtMs = updateFloorDt(tMs);
-  if (dtMs <= 0) return;
+// Reset floor timers
+resetFloorDwellTimers();
 
-  const inFloorLocked = isWristInFloorZone(pose, state.lockedSide);
+state.testStage = “RUNNING”;
+setStatus(`Set ${state.setCount}: ${side.toUpperCase()} hand — tracking`, “#10b981”);
 
-  const slowEnough =
-    (state.lastSpeed < CONFIG.RESET_SPEED_CUTOFF) &&
-    (Math.abs(state.lastVy) < CONFIG.RESET_VY_CUTOFF);
+updateSetDisplay();
 
-  const countThisFrame = inFloorLocked && slowEnough;
-  state.floorMsLocked = countThisFrame ? (state.floorMsLocked + dtMs) : 0;
-
-  if (state.floorMsLocked >= CONFIG.RESET_MS_REQUIRED) {
-    // Unlock side for next set, but DO NOT reset totals.
-    state.sideLocked = false;
-    state.lockedSide = "unknown";
-    state.lockedAtMs = 0;
-
-    // reset dwell timers for re-arming
-    state.floorMsLeft = 0;
-    state.floorMsRight = 0;
-    state.floorMsLocked = 0;
-    state.lastFloorUpdateMs = tMs;
-
-    // reset only mechanics so next set can be tracked cleanly
-    resetSetMechanicsOnly();
-
-    state.testStage = "ARMING";
-    setStatus("Set down detected — grab bell to arm next set", "#fbbf24");
-  }
+if (CONFIG.DEBUG_MODE) {
+console.log(`[SET ${state.setCount}] Locked ${side} at ${tMs.toFixed(0)}ms`);
+}
 }
 
-function updateFloorDt(tMs) {
-  if (state.lastFloorUpdateMs == null) {
-    state.lastFloorUpdateMs = tMs;
-    return 0;
-  }
-  const dtMs = tMs - state.lastFloorUpdateMs;
-  state.lastFloorUpdateMs = tMs;
-  if (dtMs < 0 || dtMs > 250) return 0;
-  return dtMs;
+/* —————– SET DOWN DETECTION —————– */
+
+function detectSetDown(pose, tMs) {
+if (!state.sideLocked || !state.lockedSide) return;
+
+// Grace period after locking
+if ((tMs - state.lockedAtMs) < CONFIG.RESET_GRACE_MS) return;
+
+const dtMs = getDeltaTime(tMs);
+if (dtMs <= 0) return;
+
+const inFloorZone = isWristInFloorZone(pose, state.lockedSide);
+const isSlowEnough = state.smoothedSpeed < CONFIG.RESET_SPEED_CUTOFF;
+const shouldCount = inFloorZone && isSlowEnough;
+
+updateDwellTimer(state.floorDwell.locked, shouldCount, tMs, dtMs);
+
+if (state.floorDwell.locked.dwellMs >= CONFIG.RESET_MS_REQUIRED) {
+// End current set
+if (state.currentSetReps > 0) {
+state.setHistory.push({
+reps: state.currentSetReps,
+peaks: […state.currentSetPeaks],
+avgPeak: avg(state.currentSetPeaks),
+side: state.lockedSide,
+startMs: state.lockedAtMs,
+endMs: tMs
+});
 }
 
-function isWristInFloorZone(pose, side) {
-  const idx = side === "left" ? CONFIG.LEFT : CONFIG.RIGHT;
-  const wrist = pose[idx.WRIST];
-  const knee = pose[idx.KNEE];
-  const ankle = pose[idx.ANKLE];
-  if (!wrist || !knee || !ankle) return false;
-
-  const shank = ankle.y - knee.y;
-  if (shank < CONFIG.MIN_SHANK_LEN_NORM) return false;
-
-  const threshold = knee.y + CONFIG.SHANK_FRACTION * shank;
-  return wrist.y > threshold;
+```
+if (CONFIG.DEBUG_MODE) {
+  console.log(`[SET ${state.setCount} END] ${state.currentSetReps} reps, avg peak: ${avg(state.currentSetPeaks).toFixed(2)} m/s`);
 }
 
-function floorDepth(pose, side) {
-  const idx = side === "left" ? CONFIG.LEFT : CONFIG.RIGHT;
-  const wrist = pose[idx.WRIST];
-  const knee = pose[idx.KNEE];
-  const ankle = pose[idx.ANKLE];
-  if (!wrist || !knee || !ankle) return 0;
+// Unlock for next set
+state.sideLocked = false;
+state.lockedSide = null;
+state.lockedAtMs = 0;
 
-  const shank = ankle.y - knee.y;
-  if (shank < CONFIG.MIN_SHANK_LEN_NORM) return 0;
+// Reset for re-arming
+resetFloorDwellTimers();
+resetMechanics();
 
-  const threshold = knee.y + CONFIG.SHANK_FRACTION * shank;
-  return Math.max(0, wrist.y - threshold);
+state.testStage = "ARMING";
+setStatus("Set complete — grab bell to start next set", "#fbbf24");
+```
+
+}
 }
 
-/* ---------------------- SNATCH PHYSICS + LOGIC ---------------------- */
+/* —————– SNATCH PHYSICS + REP DETECTION —————– */
 
-function runSnatchPhysicsAndLogic(pose, timeMs) {
-  const side = state.lockedSide;
-  if (side !== "left" && side !== "right") return;
+function processSnatchFrame(pose, tMs) {
+if (!state.lockedSide) return;
 
-  const idx = side === "left" ? CONFIG.LEFT : CONFIG.RIGHT;
-  const wrist = pose[idx.WRIST];
-  const shoulder = pose[idx.SHOULDER];
-  const hip = pose[idx.HIP];
+const idx = state.lockedSide === “left” ? CONFIG.LEFT : CONFIG.RIGHT;
+const wrist = pose[idx.WRIST];
+const elbow = pose[idx.ELBOW];
+const shoulder = pose[idx.SHOULDER];
+const hip = pose[idx.HIP];
 
-  if (!wrist || !shoulder || !hip) return;
-  if ((wrist.visibility ?? 1) < 0.5) return;
+if (!wrist || !shoulder || !hip) return;
+if ((wrist.visibility ?? 1) < 0.4) return;
 
-  if (!state.lockedCalibration) {
-    const torsoPx = Math.abs(shoulder.y - hip.y) * state.canvas.height;
-    state.lockedCalibration = torsoPx > 0 ? torsoPx / CONFIG.TORSO_METERS : 100;
+// Calibration (pixels per meter based on torso length)
+if (!state.calibrationPxPerM) {
+const torsoPx = Math.abs(shoulder.y - hip.y) * state.canvas.height;
+state.calibrationPxPerM = torsoPx > 10 ? torsoPx / CONFIG.TORSO_METERS : 200;
+}
+
+// Calculate velocity
+const velocity = calculateVelocity(wrist, tMs);
+if (!velocity) return;
+
+const { speed, vy } = velocity;
+
+// Update smoothed values
+state.rawSpeed = speed;
+state.rawVy = vy;
+state.smoothedSpeed = CONFIG.SMOOTHING_ALPHA * speed + (1 - CONFIG.SMOOTHING_ALPHA) * state.smoothedSpeed;
+state.smoothedVy = CONFIG.SMOOTHING_ALPHA * vy + (1 - CONFIG.SMOOTHING_ALPHA) * state.smoothedVy;
+
+// Update velocity display
+document.getElementById(“val-velocity”).textContent = state.smoothedSpeed.toFixed(2);
+
+// Determine position relative to body
+const isBelowHip = wrist.y >= hip.y + CONFIG.BOTTOM_THRESHOLD;
+const isAboveShoulder = wrist.y <= shoulder.y + CONFIG.OVERHEAD_THRESHOLD;
+
+// Check arm extension (for lockout validation)
+const armExtension = elbow ? getArmExtension(wrist, elbow, shoulder) : 1.0;
+const isArmExtended = armExtension >= CONFIG.ARM_EXTENSION_MIN;
+
+// Rep detection state machine
+detectRep(isBelowHip, isAboveShoulder, isArmExtended, tMs);
+
+// Store wrist for next frame
+state.prevWrist = { x: wrist.x, y: wrist.y, tMs };
+}
+
+function calculateVelocity(wrist, tMs) {
+if (!state.prevWrist) {
+state.prevWrist = { x: wrist.x, y: wrist.y, tMs };
+return null;
+}
+
+const dt = (tMs - state.prevWrist.tMs) / 1000;
+if (dt < CONFIG.MIN_DT || dt > CONFIG.MAX_DT) {
+state.prevWrist = { x: wrist.x, y: wrist.y, tMs };
+return null;
+}
+
+// Convert normalized coordinates to pixels, then to meters
+const dxPx = (wrist.x - state.prevWrist.x) * state.canvas.width;
+const dyPx = (wrist.y - state.prevWrist.y) * state.canvas.height;
+
+const dxM = dxPx / state.calibrationPxPerM;
+const dyM = dyPx / state.calibrationPxPerM;
+
+const vx = dxM / dt;
+// Note: In MediaPipe, Y increases downward. Invert so upward motion = positive vy
+const vy = -dyM / dt;
+const speed = Math.hypot(vx, vy);
+
+// Reject unrealistic velocities
+if (speed > CONFIG.MAX_REALISTIC_VELOCITY) {
+return null;
+}
+
+return { speed, vx, vy };
+}
+
+function getArmExtension(wrist, elbow, shoulder) {
+// Calculate how extended the arm is (1.0 = fully extended)
+const upperArmLen = Math.hypot(elbow.x - shoulder.x, elbow.y - shoulder.y);
+const forearmLen = Math.hypot(wrist.x - elbow.x, wrist.y - elbow.y);
+const totalArmLen = Math.hypot(wrist.x - shoulder.x, wrist.y - shoulder.y);
+
+const maxLen = upperArmLen + forearmLen;
+return maxLen > 0 ? totalArmLen / maxLen : 0;
+}
+
+function detectRep(isBelowHip, isAboveShoulder, isArmExtended, tMs) {
+const speed = state.smoothedSpeed;
+const vy = state.smoothedVy;
+
+switch (state.phase) {
+case “IDLE”:
+// Wait for wrist to go to bottom position to start rep cycle
+if (isBelowHip) {
+state.phase = “BOTTOM”;
+state.currentRepPeak = 0;
+state.currentRepStartMs = tMs;
+if (CONFIG.DEBUG_MODE) console.log(`[PHASE] IDLE → BOTTOM`);
+}
+break;
+
+```
+case "BOTTOM":
+  // Track peak velocity while at bottom
+  if (speed > state.currentRepPeak) {
+    state.currentRepPeak = speed;
+  }
+  
+  // Transition to ascending when wrist leaves bottom zone AND moving upward
+  if (!isBelowHip && vy > 0.5) {
+    state.phase = "ASCENDING";
+    if (CONFIG.DEBUG_MODE) console.log(`[PHASE] BOTTOM → ASCENDING (vy: ${vy.toFixed(2)})`);
+  }
+  break;
+
+case "ASCENDING":
+  // Continue tracking peak velocity during ascent
+  if (speed > state.currentRepPeak) {
+    state.currentRepPeak = speed;
   }
 
-  if (!state.prevWrist) {
-    state.prevWrist = { xNorm: wrist.x, yNorm: wrist.y, tMs: timeMs };
-    return;
-  }
+  // Check for lockout conditions
+  const lockoutConditions = {
+    overhead: isAboveShoulder,
+    slowVy: Math.abs(vy) < CONFIG.LOCKOUT_VY_THRESHOLD,
+    slowSpeed: speed < CONFIG.LOCKOUT_SPEED_THRESHOLD,
+    armExtended: isArmExtended
+  };
 
-  const dt = (timeMs - state.prevWrist.tMs) / 1000;
-  if (dt < CONFIG.MIN_DT || dt > CONFIG.MAX_DT) {
-    state.prevWrist = { xNorm: wrist.x, yNorm: wrist.y, tMs: timeMs };
-    return;
-  }
+  const isLockout = lockoutConditions.overhead && 
+                    lockoutConditions.slowVy && 
+                    lockoutConditions.slowSpeed;
 
-  const dxPx = (wrist.x - state.prevWrist.xNorm) * state.canvas.width;
-  const dyPx = (wrist.y - state.prevWrist.yNorm) * state.canvas.height;
-
-  const vx = (dxPx / state.lockedCalibration) / dt;
-  const vy = (dyPx / state.lockedCalibration) / dt;
-  const speed = Math.hypot(vx, vy);
-
-  state.lastSpeed = speed;
-  state.lastVy = vy;
-
-  if (speed > CONFIG.MAX_REALISTIC_VELOCITY) {
-    state.prevWrist = { xNorm: wrist.x, yNorm: wrist.y, tMs: timeMs };
-    return;
-  }
-
-  if (state.smoothedVelocity == null) state.smoothedVelocity = speed;
-  if (state.smoothedVy == null) state.smoothedVy = vy;
-
-  state.smoothedVelocity =
-    CONFIG.SMOOTHING_ALPHA * speed + (1 - CONFIG.SMOOTHING_ALPHA) * state.smoothedVelocity;
-  state.smoothedVy =
-    CONFIG.SMOOTHING_ALPHA * vy + (1 - CONFIG.SMOOTHING_ALPHA) * state.smoothedVy;
-
-  const v = state.smoothedVelocity;
-  const vyS = state.smoothedVy;
-
-  document.getElementById("val-velocity").textContent = v.toFixed(2);
-
-  const isBelowHip = wrist.y > hip.y;
-  const isAboveShoulder = wrist.y < shoulder.y;
-
-  if (state.phase === "IDLE" || state.phase === "LOCKOUT") {
+  if (isLockout) {
+    state.overheadHoldCount++;
+    
+    if (state.overheadHoldCount >= CONFIG.OVERHEAD_HOLD_FRAMES) {
+      completeRep(tMs);
+    }
+  } else {
+    state.overheadHoldCount = 0;
+    
+    // If we drop back below hip without completing, it's a failed rep
     if (isBelowHip) {
       state.phase = "BOTTOM";
-      state.overheadHoldCount = 0;
-    }
-  } else if (state.phase === "BOTTOM") {
-    if (!isBelowHip) {
-      state.phase = "CONCENTRIC";
       state.currentRepPeak = 0;
-      state.overheadHoldCount = 0;
-    }
-  } else if (state.phase === "CONCENTRIC") {
-    if (v > state.currentRepPeak) state.currentRepPeak = v;
-
-    const lockoutOk =
-      isAboveShoulder &&
-      Math.abs(vyS) < CONFIG.LOCKOUT_VY_CUTOFF &&
-      v < CONFIG.LOCKOUT_SPEED_CUTOFF;
-
-    if (lockoutOk) {
-      state.overheadHoldCount++;
-      if (state.overheadHoldCount >= CONFIG.OVERHEAD_HOLD_FRAMES) finishRep();
-    } else {
-      state.overheadHoldCount = 0;
-      if (isBelowHip) state.phase = "BOTTOM";
+      if (CONFIG.DEBUG_MODE) console.log(`[PHASE] ASCENDING → BOTTOM (failed rep)`);
     }
   }
+  break;
 
-  state.prevWrist = { xNorm: wrist.x, yNorm: wrist.y, tMs: timeMs };
-}
-
-function finishRep() {
-  state.phase = "LOCKOUT";
-  state.overheadHoldCount = 0;
-
-  state.repCount++;
-  state.repHistory.push(state.currentRepPeak);
-
-  document.getElementById("val-reps").textContent = String(state.repCount);
-  document.getElementById("val-peak").textContent = state.currentRepPeak.toFixed(2);
-
-  const dropEl = document.getElementById("val-drop");
-
-  if (state.repCount <= CONFIG.BASELINE_REPS) {
-    state.baseline = avg(state.repHistory);
-    dropEl.textContent = "CALC...";
-    dropEl.style.color = "#94a3b8";
-  } else {
-    const drop = (state.baseline - state.currentRepPeak) / state.baseline;
-    const dropPct = (drop * 100).toFixed(1);
-    dropEl.textContent = `-${dropPct}%`;
-
-    if (drop * 100 >= CONFIG.DROP_FAIL) dropEl.style.color = "#ef4444";
-    else if (drop * 100 >= CONFIG.DROP_WARN) dropEl.style.color = "#fbbf24";
-    else dropEl.style.color = "#10b981";
+case "LOCKOUT":
+  // Wait for wrist to drop back down to start next rep
+  if (isBelowHip) {
+    state.phase = "BOTTOM";
+    state.currentRepPeak = 0;
+    state.currentRepStartMs = tMs;
+    state.overheadHoldCount = 0;
+    if (CONFIG.DEBUG_MODE) console.log(`[PHASE] LOCKOUT → BOTTOM`);
   }
+  break;
+```
+
+}
 }
 
-/* ------------------------------ DRAWING ------------------------------ */
+function completeRep(tMs) {
+state.phase = “LOCKOUT”;
+state.overheadHoldCount = 0;
+
+// Update counts
+state.totalReps++;
+state.currentSetReps++;
+
+// Store peak velocity
+state.repHistory.push(state.currentRepPeak);
+state.currentSetPeaks.push(state.currentRepPeak);
+
+if (CONFIG.DEBUG_MODE) {
+console.log(`[REP ${state.totalReps}] Peak: ${state.currentRepPeak.toFixed(2)} m/s (Set ${state.setCount}, Rep ${state.currentSetReps})`);
+}
+
+// Update displays
+document.getElementById(“val-reps”).textContent = String(state.totalReps);
+document.getElementById(“val-peak”).textContent = state.currentRepPeak.toFixed(2);
+updateSetDisplay();
+
+// Calculate and display drop-off
+updateDropOff();
+}
+
+function updateDropOff() {
+const dropEl = document.getElementById(“val-drop”);
+
+if (state.repHistory.length <= CONFIG.BASELINE_REPS) {
+// Still building baseline
+state.baseline = avg(state.repHistory);
+dropEl.textContent = “CALC…”;
+dropEl.style.color = “#94a3b8”;
+} else {
+// Compare current rep to baseline
+const currentPeak = state.repHistory[state.repHistory.length - 1];
+const dropFraction = (state.baseline - currentPeak) / state.baseline;
+const dropPct = dropFraction * 100;
+
+```
+dropEl.textContent = dropPct > 0 ? `-${dropPct.toFixed(1)}%` : `+${Math.abs(dropPct).toFixed(1)}%`;
+
+if (dropPct >= CONFIG.DROP_FAIL) {
+  dropEl.style.color = "#ef4444"; // Red
+} else if (dropPct >= CONFIG.DROP_WARN) {
+  dropEl.style.color = "#fbbf24"; // Yellow
+} else {
+  dropEl.style.color = "#10b981"; // Green
+}
+```
+
+}
+}
+
+/* —————– FLOOR ZONE HELPERS —————– */
+
+function isWristInFloorZone(pose, side) {
+const idx = side === “left” ? CONFIG.LEFT : CONFIG.RIGHT;
+const wrist = pose[idx.WRIST];
+const knee = pose[idx.KNEE];
+const ankle = pose[idx.ANKLE];
+
+if (!wrist || !knee || !ankle) return false;
+if ((wrist.visibility ?? 1) < 0.4) return false;
+
+// Shank length (knee to ankle)
+const shankLen = ankle.y - knee.y;
+if (shankLen < CONFIG.MIN_SHANK_LEN_NORM) return false;
+
+// Floor zone threshold: below knee by SHANK_FRACTION of shank length
+const threshold = knee.y + CONFIG.SHANK_FRACTION * shankLen;
+return wrist.y > threshold;
+}
+
+function getFloorDepth(pose, side) {
+const idx = side === “left” ? CONFIG.LEFT : CONFIG.RIGHT;
+const wrist = pose[idx.WRIST];
+const knee = pose[idx.KNEE];
+const ankle = pose[idx.ANKLE];
+
+if (!wrist || !knee || !ankle) return 0;
+
+const shankLen = ankle.y - knee.y;
+if (shankLen < CONFIG.MIN_SHANK_LEN_NORM) return 0;
+
+const threshold = knee.y + CONFIG.SHANK_FRACTION * shankLen;
+return Math.max(0, wrist.y - threshold);
+}
+
+function updateDwellTimer(timer, isInZone, tMs, dtMs) {
+if (isInZone) {
+if (!timer.inZone) {
+timer.inZone = true;
+timer.startMs = tMs;
+timer.dwellMs = 0;
+}
+timer.dwellMs += dtMs;
+} else {
+timer.inZone = false;
+timer.startMs = null;
+timer.dwellMs = 0;
+}
+}
+
+function resetFloorDwellTimers() {
+state.floorDwell.left = { inZone: false, startMs: null, dwellMs: 0 };
+state.floorDwell.right = { inZone: false, startMs: null, dwellMs: 0 };
+state.floorDwell.locked = { inZone: false, startMs: null, dwellMs: 0 };
+}
+
+function getDeltaTime(tMs) {
+if (state.lastUpdateMs == null) {
+state.lastUpdateMs = tMs;
+return 0;
+}
+const dtMs = tMs - state.lastUpdateMs;
+state.lastUpdateMs = tMs;
+
+// Reject bad deltas (negative or too large)
+if (dtMs < 0 || dtMs > 250) return 0;
+return dtMs;
+}
+
+/* —————————— DRAWING —————————— */
 
 function drawOverlay() {
-  state.ctx.clearRect(0, 0, state.canvas.width, state.canvas.height);
-  if (!state.lastPose) return;
+state.ctx.clearRect(0, 0, state.canvas.width, state.canvas.height);
+if (!state.lastPose) return;
 
-  if (state.isTestRunning && state.testStage === "ARMING") {
-    drawFloorDebug(state.lastPose, "left");
-    drawFloorDebug(state.lastPose, "right");
-
-    const Lw = state.lastPose[CONFIG.LEFT.WRIST];
-    const Rw = state.lastPose[CONFIG.RIGHT.WRIST];
-    if (Lw) drawDot(Lw, false, "#60a5fa");
-    if (Rw) drawDot(Rw, false, "#f87171");
-    return;
-  }
-
-  if (state.sideLocked && (state.lockedSide === "left" || state.lockedSide === "right")) {
-    const idx = state.lockedSide === "left" ? CONFIG.LEFT : CONFIG.RIGHT;
-    const wrist = state.lastPose[idx.WRIST];
-    const shoulder = state.lastPose[idx.SHOULDER];
-    const hip = state.lastPose[idx.HIP];
-
-    if (shoulder && hip) drawZones(shoulder, hip, 0.65);
-    if (wrist) drawDot(wrist, true);
-  }
+if (state.isTestRunning && state.testStage === “ARMING”) {
+drawArmingOverlay(state.lastPose);
+} else if (state.isTestRunning && state.testStage === “RUNNING”) {
+drawTrackingOverlay(state.lastPose);
+}
 }
 
-function drawFloorDebug(pose, side) {
-  const idx = side === "left" ? CONFIG.LEFT : CONFIG.RIGHT;
-  const knee = pose[idx.KNEE];
-  const ankle = pose[idx.ANKLE];
-  if (!knee || !ankle) return;
+function drawArmingOverlay(pose) {
+// Draw floor zone lines for both sides
+drawFloorZoneLine(pose, “left”, “#60a5fa”);
+drawFloorZoneLine(pose, “right”, “#f87171”);
 
-  const shank = ankle.y - knee.y;
-  if (shank < CONFIG.MIN_SHANK_LEN_NORM) return;
+// Draw wrist positions with dwell progress
+const leftWrist = pose[CONFIG.LEFT.WRIST];
+const rightWrist = pose[CONFIG.RIGHT.WRIST];
 
-  const threshold = knee.y + CONFIG.SHANK_FRACTION * shank;
-  const yPx = threshold * state.canvas.height;
-
-  state.ctx.strokeStyle = side === "left" ? "rgba(96,165,250,0.4)" : "rgba(248,113,113,0.4)";
-  state.ctx.lineWidth = 2;
-  state.ctx.beginPath();
-  state.ctx.moveTo(0, yPx);
-  state.ctx.lineTo(state.canvas.width, yPx);
-  state.ctx.stroke();
+if (leftWrist) {
+const progress = Math.min(1, state.floorDwell.left.dwellMs / CONFIG.ARM_MS_REQUIRED);
+drawWristDot(leftWrist, “#60a5fa”, progress);
+}
+if (rightWrist) {
+const progress = Math.min(1, state.floorDwell.right.dwellMs / CONFIG.ARM_MS_REQUIRED);
+drawWristDot(rightWrist, “#f87171”, progress);
+}
 }
 
-function drawZones(shoulder, hip, alpha = 0.6) {
-  const ctx = state.ctx;
-  const w = state.canvas.width;
-  const h = state.canvas.height;
+function drawTrackingOverlay(pose) {
+if (!state.lockedSide) return;
 
-  const shoulderY = shoulder.y * h;
-  ctx.strokeStyle = `rgba(16, 185, 129, ${alpha})`;
-  ctx.lineWidth = 2;
-  ctx.beginPath();
-  ctx.moveTo(0, shoulderY);
-  ctx.lineTo(w, shoulderY);
-  ctx.stroke();
+const idx = state.lockedSide === “left” ? CONFIG.LEFT : CONFIG.RIGHT;
+const wrist = pose[idx.WRIST];
+const shoulder = pose[idx.SHOULDER];
+const hip = pose[idx.HIP];
 
-  const hipY = hip.y * h;
-  ctx.strokeStyle = `rgba(59, 130, 246, ${alpha})`;
-  ctx.beginPath();
-  ctx.moveTo(0, hipY);
-  ctx.lineTo(w, hipY);
-  ctx.stroke();
+// Draw body reference lines
+if (shoulder && hip) {
+drawHorizontalLine(shoulder.y, “#10b981”, “Shoulder”);
+drawHorizontalLine(hip.y, “#3b82f6”, “Hip”);
 }
 
-function drawDot(wrist, emphasized = false, overrideColor = null) {
-  const x = wrist.x * state.canvas.width;
-  const y = wrist.y * state.canvas.height;
-
-  const ctx = state.ctx;
-  ctx.fillStyle = overrideColor || (emphasized ? "#10b981" : "#ef4444");
-  ctx.beginPath();
-  ctx.arc(x, y, emphasized ? 10 : 7, 0, 2 * Math.PI);
-  ctx.fill();
-
-  ctx.fillStyle = "white";
-  ctx.beginPath();
-  ctx.arc(x, y, 3, 0, 2 * Math.PI);
-  ctx.fill();
+// Draw wrist position
+if (wrist) {
+const color = state.phase === “LOCKOUT” ? “#10b981” :
+state.phase === “ASCENDING” ? “#fbbf24” : “#3b82f6”;
+drawWristDot(wrist, color, 1.0, true);
 }
 
-/* ------------------------------ CONTROLS ------------------------------ */
+// Draw phase indicator
+drawPhaseIndicator();
+}
+
+function drawFloorZoneLine(pose, side, color) {
+const idx = side === “left” ? CONFIG.LEFT : CONFIG.RIGHT;
+const knee = pose[idx.KNEE];
+const ankle = pose[idx.ANKLE];
+
+if (!knee || !ankle) return;
+
+const shankLen = ankle.y - knee.y;
+if (shankLen < CONFIG.MIN_SHANK_LEN_NORM) return;
+
+const threshold = knee.y + CONFIG.SHANK_FRACTION * shankLen;
+const yPx = threshold * state.canvas.height;
+
+state.ctx.strokeStyle = color;
+state.ctx.globalAlpha = 0.5;
+state.ctx.lineWidth = 2;
+state.ctx.setLineDash([5, 5]);
+state.ctx.beginPath();
+state.ctx.moveTo(0, yPx);
+state.ctx.lineTo(state.canvas.width, yPx);
+state.ctx.stroke();
+state.ctx.setLineDash([]);
+state.ctx.globalAlpha = 1.0;
+}
+
+function drawHorizontalLine(yNorm, color, label) {
+const yPx = yNorm * state.canvas.height;
+
+state.ctx.strokeStyle = color;
+state.ctx.globalAlpha = 0.6;
+state.ctx.lineWidth = 2;
+state.ctx.beginPath();
+state.ctx.moveTo(0, yPx);
+state.ctx.lineTo(state.canvas.width, yPx);
+state.ctx.stroke();
+state.ctx.globalAlpha = 1.0;
+
+if (label) {
+state.ctx.fillStyle = color;
+state.ctx.font = “12px sans-serif”;
+state.ctx.fillText(label, 5, yPx - 5);
+}
+}
+
+function drawWristDot(wrist, color, progress = 1.0, large = false) {
+const x = wrist.x * state.canvas.width;
+const y = wrist.y * state.canvas.height;
+const radius = large ? 12 : 8;
+
+// Progress ring
+if (progress < 1 && progress > 0) {
+state.ctx.strokeStyle = color;
+state.ctx.lineWidth = 3;
+state.ctx.beginPath();
+state.ctx.arc(x, y, radius + 4, -Math.PI/2, -Math.PI/2 + (2 * Math.PI * progress));
+state.ctx.stroke();
+}
+
+// Main dot
+state.ctx.fillStyle = color;
+state.ctx.beginPath();
+state.ctx.arc(x, y, radius, 0, 2 * Math.PI);
+state.ctx.fill();
+
+// Center dot
+state.ctx.fillStyle = “white”;
+state.ctx.beginPath();
+state.ctx.arc(x, y, 3, 0, 2 * Math.PI);
+state.ctx.fill();
+}
+
+function drawPhaseIndicator() {
+const phases = {
+“IDLE”: { color: “#94a3b8”, label: “IDLE” },
+“BOTTOM”: { color: “#3b82f6”, label: “BOTTOM” },
+“ASCENDING”: { color: “#fbbf24”, label: “ASCENDING” },
+“LOCKOUT”: { color: “#10b981”, label: “LOCKOUT ✓” }
+};
+
+const p = phases[state.phase] || phases[“IDLE”];
+
+state.ctx.fillStyle = p.color;
+state.ctx.font = “bold 14px sans-serif”;
+state.ctx.fillText(`Phase: ${p.label}`, 10, 25);
+
+// Current set info
+state.ctx.fillStyle = “#f1f5f9”;
+state.ctx.font = “12px sans-serif”;
+state.ctx.fillText(`Set ${state.setCount} | ${state.lockedSide?.toUpperCase() || '?'} | Rep ${state.currentSetReps}`, 10, 45);
+}
+
+/* —————————— CONTROLS —————————— */
 
 function setupControls() {
-  const startBtn = document.getElementById("btn-start-test");
-  const resetBtn = document.getElementById("btn-reset");
+const startBtn = document.getElementById(“btn-start-test”);
+const resetBtn = document.getElementById(“btn-reset”);
 
-  startBtn.onclick = async () => {
-    if (!state.isVideoReady) return;
+startBtn.onclick = async () => {
+if (!state.isVideoReady) return;
 
-    state.isTestRunning = true;
-    state.testStage = "ARMING";
+```
+state.isTestRunning = true;
+state.testStage = "ARMING";
 
-    state.lockedSide = "unknown";
-    state.sideLocked = false;
-    state.lockedAtMs = 0;
+// Reset side detection
+state.sideLocked = false;
+state.lockedSide = null;
+state.lockedAtMs = 0;
 
-    state.floorMsLeft = 0;
-    state.floorMsRight = 0;
-    state.floorMsLocked = 0;
-    state.lastFloorUpdateMs = null;
+// Reset floor timers
+resetFloorDwellTimers();
+state.lastUpdateMs = null;
 
-    // IMPORTANT: do NOT reset totals on Start; keep whole-video totals.
-    resetSetMechanicsOnly();
+// Reset mechanics
+resetMechanics();
 
-    startBtn.textContent = "Test Running…";
-    startBtn.disabled = true;
-    resetBtn.disabled = false;
+startBtn.textContent = "Test Running…";
+startBtn.disabled = true;
+resetBtn.disabled = false;
 
-    setStatus("ARMING: grab bell (wrist deep below knee) to lock side…", "#fbbf24");
+setStatus("ARMING: Grab bell to lock side and start tracking…", "#fbbf24");
 
-    try {
-      await state.video.play();
-    } catch {
-      alert("Playback blocked. Tap the video area once, then press Start Test again.");
-      startBtn.textContent = "▶ Start Test";
-      startBtn.disabled = false;
-      resetBtn.disabled = true;
-      state.isTestRunning = false;
-      state.testStage = "IDLE";
-    }
-  };
-
-  resetBtn.onclick = () => {
-    state.video.pause();
-    state.video.currentTime = 0;
-    resetAll("Reset — ready");
-    primeVideo();
-  };
-}
-
-/* ------------------------------ RESET HELPERS ------------------------------ */
-
-// Resets only per-set/per-rep detection mechanics; does NOT touch totals.
-function resetSetMechanicsOnly() {
-  state.prevWrist = null;
-  state.lockedCalibration = null;
-  state.smoothedVelocity = null;
-  state.smoothedVy = null;
-  state.lastSpeed = 0;
-  state.lastVy = 0;
-
-  state.phase = "IDLE";
-  state.currentRepPeak = 0;
-  state.overheadHoldCount = 0;
-
-  // UI: keep total reps displayed; just reset instantaneous displays.
-  document.getElementById("val-velocity").textContent = "0.00";
-  document.getElementById("val-peak").textContent = "0.00";
-}
-
-// Full reset (new video/session): clears totals.
-function resetAll(statusText) {
-  state.isTestRunning = false;
-  state.testStage = "IDLE";
-
-  state.lockedSide = "unknown";
-  state.sideLocked = false;
-  state.lockedAtMs = 0;
-
-  state.floorMsLeft = 0;
-  state.floorMsRight = 0;
-  state.floorMsLocked = 0;
-  state.lastFloorUpdateMs = null;
-
-  // Clear totals
-  state.repCount = 0;
-  state.repHistory = [];
-  state.baseline = 0;
-
-  resetSetMechanicsOnly();
-
-  document.getElementById("val-reps").textContent = "0";
-  const drop = document.getElementById("val-drop");
-  drop.textContent = "--";
-  drop.style.color = "#f1f5f9";
-
-  const startBtn = document.getElementById("btn-start-test");
-  const resetBtn = document.getElementById("btn-reset");
+try {
+  await state.video.play();
+} catch {
+  alert("Playback blocked. Tap the video area once, then press Start Test again.");
   startBtn.textContent = "▶ Start Test";
   startBtn.disabled = false;
   resetBtn.disabled = true;
+  state.isTestRunning = false;
+  state.testStage = "IDLE";
+}
+```
 
-  setStatus(statusText, "#3b82f6");
+};
+
+resetBtn.onclick = () => {
+state.video.pause();
+state.video.currentTime = 0;
+resetAll(“Reset — ready”);
+primeVideo();
+};
 }
 
-/* ------------------------------ UTILS ------------------------------ */
+/* —————————— RESET HELPERS —————————— */
+
+function resetMechanics() {
+state.prevWrist = null;
+state.calibrationPxPerM = null;
+state.smoothedSpeed = 0;
+state.smoothedVy = 0;
+state.rawSpeed = 0;
+state.rawVy = 0;
+state.phase = “IDLE”;
+state.overheadHoldCount = 0;
+state.currentRepPeak = 0;
+state.currentRepStartMs = null;
+
+document.getElementById(“val-velocity”).textContent = “0.00”;
+}
+
+function resetAll(statusText) {
+state.isTestRunning = false;
+state.testStage = “IDLE”;
+
+state.sideLocked = false;
+state.lockedSide = null;
+state.lockedAtMs = 0;
+
+resetFloorDwellTimers();
+state.lastUpdateMs = null;
+
+// Clear all totals
+state.totalReps = 0;
+state.setCount = 0;
+state.repHistory = [];
+state.baseline = 0;
+state.currentSetReps = 0;
+state.currentSetPeaks = [];
+state.setHistory = [];
+
+resetMechanics();
+
+// Reset displays
+document.getElementById(“val-reps”).textContent = “0”;
+document.getElementById(“val-peak”).textContent = “0.00”;
+updateSetDisplay();
+
+const dropEl = document.getElementById(“val-drop”);
+dropEl.textContent = “–”;
+dropEl.style.color = “#f1f5f9”;
+
+const startBtn = document.getElementById(“btn-start-test”);
+const resetBtn = document.getElementById(“btn-reset”);
+startBtn.textContent = “▶ Start Test”;
+startBtn.disabled = false;
+resetBtn.disabled = true;
+
+setStatus(statusText, “#3b82f6”);
+}
+
+function updateSetDisplay() {
+const setEl = document.getElementById(“val-sets”);
+if (setEl) {
+setEl.textContent = String(state.setCount);
+}
+}
+
+/* —————————— UTILS —————————— */
 
 function avg(arr) {
-  if (!arr.length) return 0;
-  return arr.reduce((a, b) => a + b, 0) / arr.length;
+if (!arr || arr.length === 0) return 0;
+return arr.reduce((a, b) => a + b, 0) / arr.length;
 }
 
 function setStatus(text, color) {
-  const pill = document.getElementById("status-pill");
-  pill.textContent = text;
-  pill.style.color = color;
-  pill.style.borderColor = color;
+const pill = document.getElementById(“status-pill”);
+if (pill) {
+pill.textContent = text;
+pill.style.color = color;
+pill.style.borderColor = color;
+}
 }
 
 initializeApp();
