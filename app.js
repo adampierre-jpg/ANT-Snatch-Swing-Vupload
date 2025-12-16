@@ -1,17 +1,25 @@
 /**
- * KB Velocity Tracker (Snatch) — “on-the-fly” handedness via first backswing.
+ * KB Velocity Tracker (Snatch) — Hike-pass “hand on bell” handedness
  *
- * Landmark indices used:
- * - Left: shoulder 11, wrist 15, hip 23
- * - Right: shoulder 12, wrist 16, hip 24  [web:64][web:53]
+ * What changed vs the previous JS:
+ * - Handedness is determined at Start Test by the FIRST wrist that enters a “floor zone”
+ *   (wrist significantly below its knee, scaled by shank length knee→ankle).
+ * - When the bell is set down (locked wrist returns to floor zone and DWELLS), handedness resets
+ *   so the next set can be auto-detected again.
+ * - Everything else (primeVideo, masterLoop, snatch phase logic, smoothing, calibration, drop-off) stays consistent.
+ *
+ * Landmark indices used include:
+ * - Left wrist 15 / right wrist 16
+ * - Left knee 25 / right knee 26
+ * - Left ankle 27 / right ankle 28  [web:54][web:53]
  */
 
 import { PoseLandmarker, FilesetResolver } from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/vision_bundle.mjs";
 
 const CONFIG = {
-  // MediaPipe Pose indices
-  LEFT:  { WRIST: 15, SHOULDER: 11, HIP: 23 },
-  RIGHT: { WRIST: 16, SHOULDER: 12, HIP: 24 },
+  // Pose indices
+  LEFT:  { WRIST: 15, SHOULDER: 11, HIP: 23, KNEE: 25, ANKLE: 27 },
+  RIGHT: { WRIST: 16, SHOULDER: 12, HIP: 24, KNEE: 26, ANKLE: 28 },
 
   // MediaPipe
   MIN_DET_CONF: 0.5,
@@ -30,11 +38,17 @@ const CONFIG = {
   DROP_WARN: 15,
   DROP_FAIL: 20,
 
-  // “First swing determines handedness”
-  ARMING_COOLDOWN_MS: 700,     // prevent rapid arm flips
-  DOMINANCE_RATIO: 1.15,       // motion ratio to break ties if both cross
-  MOTION_EMA_ALPHA: 0.25,
-  MIN_ARM_MOTION: 0.0015       // px/ms (tune per camera)
+  // Floor-zone handedness detection
+  // wrist.y > knee.y + (SHANK_FRACTION * (ankle.y - knee.y))
+  // higher fraction -> deeper below knee required (reduces false triggers)
+  SHANK_FRACTION: 0.35,
+
+  // Require consecutive frames “in zone” to confirm.
+  ARM_FRAMES_REQUIRED: 5,     // ~80–150ms at typical mobile fps
+  RESET_FRAMES_REQUIRED: 18,  // longer dwell for set-down (~300–600ms)
+
+  // Additional guard to avoid random false positives
+  MIN_SHANK_LEN_NORM: 0.06,   // if knee/ankle are too close (bad pose), ignore
 };
 
 let state = {
@@ -51,31 +65,26 @@ let state = {
   // Pose cache
   lastPose: null,
 
-  // Test mode
+  // Test
   isTestRunning: false,
-  testStage: "IDLE",          // IDLE | ARMING | RUNNING
-  armedSide: "unknown",       // left | right | unknown
-  lockedSide: "unknown",      // left | right | unknown
+  testStage: "IDLE",            // IDLE | ARMING | RUNNING
+
+  // Handedness
+  lockedSide: "unknown",        // left | right | unknown
   sideLocked: false,
-  lastArmedAt: 0,
 
-  // Backswing crossing detection
-  wasBelowHipLeft: false,
-  wasBelowHipRight: false,
-
-  // Motion dominance
-  prevWristLeft: null,        // {xPx, yPx, tMs}
-  prevWristRight: null,
-  motionEmaLeft: 0,
-  motionEmaRight: 0,
+  // Floor-zone counters
+  floorCountLeft: 0,
+  floorCountRight: 0,
+  floorCountLocked: 0,
 
   // Physics (locked side only)
-  prevWrist: null,            // {xNorm, yNorm, tMs}
-  lockedCalibration: null,    // px/m
+  prevWrist: null,              // {xNorm, yNorm, tMs}
+  lockedCalibration: null,      // px/m
   smoothedVelocity: 0,
 
   // Rep state
-  phase: "IDLE",              // IDLE -> BOTTOM -> CONCENTRIC -> LOCKOUT
+  phase: "IDLE",                // IDLE -> BOTTOM -> CONCENTRIC -> LOCKOUT
   repCount: 0,
   currentRepPeak: 0,
   repHistory: [],
@@ -120,7 +129,6 @@ async function initializeApp() {
     });
 
     setupControls();
-
     requestAnimationFrame(masterLoop);
   } catch (e) {
     console.error(e);
@@ -163,7 +171,7 @@ function onVideoReady() {
   document.getElementById("btn-start-test").disabled = false;
 
   primeVideo();
-  setStatus("Video Loaded — press Start Test (first backswing arms side)", "#fbbf24");
+  setStatus("Video Loaded — press Start Test", "#fbbf24");
 }
 
 function primeVideo() {
@@ -175,7 +183,6 @@ function primeVideo() {
         state.video.currentTime = 0;
       }, 120);
     }).catch(() => {
-      // Autoplay blocked (expected on mobile); user will press Start Test.
       console.log("Autoplay blocked.");
     });
   }
@@ -185,20 +192,22 @@ function primeVideo() {
 
 function masterLoop() {
   if (state.isModelLoaded && state.isVideoReady && state.video.readyState >= 2) {
-    // Monotonic timestamp keeps MediaPipe stable across resets/seeks
+    // monotonic timestamp for MediaPipe stability across seeks/resets
     const result = state.landmarker.detectForVideo(state.video, performance.now());
 
     if (result.landmarks && result.landmarks.length > 0) {
       state.lastPose = result.landmarks[0];
 
-      // During ARMING stage, lock handedness from first backswing event
+      // Stage logic:
+      // ARMING: decide lockedSide via floor-zone entry
       if (state.isTestRunning && state.testStage === "ARMING") {
-        tryArmFromBackswing(state.lastPose, state.video.currentTime * 1000);
+        updateHandednessByFloorGrab(state.lastPose);
       }
 
-      // During RUNNING stage, compute snatch velocity + reps (locked side)
+      // RUNNING: track snatch only on locked side; also watch for set-down to reset
       if (state.isTestRunning && state.testStage === "RUNNING" && !state.video.paused) {
         runSnatchPhysicsAndLogic(state.lastPose, state.video.currentTime * 1000);
+        maybeResetOnSetDown(state.lastPose);
       }
     }
   }
@@ -207,98 +216,104 @@ function masterLoop() {
   requestAnimationFrame(masterLoop);
 }
 
-/* ------------------------ FIRST-SWING ARMING ------------------------ */
+/* ----------------- FLOOR ZONE: ARMING + RESET ----------------- */
 
-function tryArmFromBackswing(pose, tMs) {
-  if (state.sideLocked) return;
+function updateHandednessByFloorGrab(pose) {
+  // Compute floor-zone membership for each side
+  const inFloorLeft = isWristInFloorZone(pose, "left");
+  const inFloorRight = isWristInFloorZone(pose, "right");
 
-  const L = getSideLandmarks(pose, "left");
-  const R = getSideLandmarks(pose, "right");
-  if (!L.wrist || !L.hip || !L.shoulder || !R.wrist || !R.hip || !R.shoulder) return;
+  // Update consecutive counters
+  state.floorCountLeft = inFloorLeft ? state.floorCountLeft + 1 : 0;
+  state.floorCountRight = inFloorRight ? state.floorCountRight + 1 : 0;
 
-  // Below-hip state per side
-  const belowHipLeft = L.wrist.y > L.hip.y;
-  const belowHipRight = R.wrist.y > R.hip.y;
-
-  // Cross into below-hip (backswing event)
-  const crossedLeft = !state.wasBelowHipLeft && belowHipLeft;
-  const crossedRight = !state.wasBelowHipRight && belowHipRight;
-
-  state.wasBelowHipLeft = belowHipLeft;
-  state.wasBelowHipRight = belowHipRight;
-
-  // Motion EMA (tie-breaker)
-  const motionL = updateMotionEma("left", L.wrist, tMs);
-  const motionR = updateMotionEma("right", R.wrist, tMs);
-
-  // Cooldown: don’t re-arm rapidly
-  if (state.armedSide !== "unknown" && (tMs - state.lastArmedAt) < CONFIG.ARMING_COOLDOWN_MS) return;
-
-  let candidate = "unknown";
-
-  // Primary: first backswing cross wins
-  if (crossedLeft && !crossedRight) candidate = "left";
-  if (crossedRight && !crossedLeft) candidate = "right";
-
-  // If both cross same frame (or neither), use dominance
-  if (candidate === "unknown") {
-    const hasMotion = (motionL > CONFIG.MIN_ARM_MOTION) || (motionR > CONFIG.MIN_ARM_MOTION);
-    if (!hasMotion) return;
-
-    if (motionL > motionR * CONFIG.DOMINANCE_RATIO) candidate = "left";
-    else if (motionR > motionL * CONFIG.DOMINANCE_RATIO) candidate = "right";
-    else return;
+  // Winner: first side to reach required dwell frames
+  if (state.floorCountLeft >= CONFIG.ARM_FRAMES_REQUIRED && state.floorCountRight < CONFIG.ARM_FRAMES_REQUIRED) {
+    lockSideAndStartRunning("left");
+    return;
+  }
+  if (state.floorCountRight >= CONFIG.ARM_FRAMES_REQUIRED && state.floorCountLeft < CONFIG.ARM_FRAMES_REQUIRED) {
+    lockSideAndStartRunning("right");
+    return;
   }
 
-  // Candidate must actually be in below-hip zone (it’s the snatch backswing)
-  if (candidate === "left" && !belowHipLeft) return;
-  if (candidate === "right" && !belowHipRight) return;
+  // If both hit at once, pick the one that is deeper (wrist.y - threshold bigger)
+  if (state.floorCountLeft >= CONFIG.ARM_FRAMES_REQUIRED && state.floorCountRight >= CONFIG.ARM_FRAMES_REQUIRED) {
+    const depthL = floorDepth(pose, "left");
+    const depthR = floorDepth(pose, "right");
+    lockSideAndStartRunning(depthL >= depthR ? "left" : "right");
+  }
+}
 
-  // LOCK SIDE
-  state.armedSide = candidate;
-  state.lockedSide = candidate;
+function lockSideAndStartRunning(side) {
+  state.lockedSide = side;
   state.sideLocked = true;
-  state.lastArmedAt = tMs;
 
-  // IMPORTANT: first swing was only for handedness → reset all rep/physics state NOW
+  // The “grab” phase should not contaminate the rep 
+  // reset physics + reps now so tracking starts clean AFTER the grab.
   resetRunStateOnly();
 
-  // Transition to RUNNING stage; the *next* snatch(s) become the tracked reps
   state.testStage = "RUNNING";
-  setStatus(`Locked ${candidate.toUpperCase()} — tracking reps now`, "#10b981");
+  setStatus(`Locked ${side.toUpperCase()} — tracking`, "#10b981");
 }
 
-function updateMotionEma(side, wrist, tMs) {
-  const xPx = wrist.x * state.canvas.width;
-  const yPx = wrist.y * state.canvas.height;
-  const prev = side === "left" ? state.prevWristLeft : state.prevWristRight;
+function maybeResetOnSetDown(pose) {
+  if (!state.sideLocked) return;
 
-  let inst = 0;
-  if (prev) {
-    const dt = tMs - prev.tMs;
-    if (dt > 0) inst = Math.hypot(xPx - prev.xPx, yPx - prev.yPx) / dt; // px/ms
-  }
+  // If the locked wrist is in floor-zone long enough, treat as "bell set down"
+  const inFloorLocked = isWristInFloorZone(pose, state.lockedSide);
+  state.floorCountLocked = inFloorLocked ? state.floorCountLocked + 1 : 0;
 
-  const alpha = CONFIG.MOTION_EMA_ALPHA;
+  if (state.floorCountLocked >= CONFIG.RESET_FRAMES_REQUIRED) {
+    // Reset handedness but keep video/test running (so next set can be detected)
+    state.sideLocked = false;
+    state.lockedSide = "unknown";
+    state.testStage = "ARMING";
 
-  if (side === "left") {
-    state.motionEmaLeft = alpha * inst + (1 - alpha) * state.motionEmaLeft;
-    state.prevWristLeft = { xPx, yPx, tMs };
-    return state.motionEmaLeft;
-  } else {
-    state.motionEmaRight = alpha * inst + (1 - alpha) * state.motionEmaRight;
-    state.prevWristRight = { xPx, yPx, tMs };
-    return state.motionEmaRight;
+    // Clear counters + run state (ready for next set)
+    state.floorCountLeft = 0;
+    state.floorCountRight = 0;
+    state.floorCountLocked = 0;
+
+    resetRunStateOnly();
+    setStatus("Set down detected — arm next set by grabbing bell", "#fbbf24");
   }
 }
 
-function getSideLandmarks(pose, side) {
+function isWristInFloorZone(pose, side) {
   const idx = side === "left" ? CONFIG.LEFT : CONFIG.RIGHT;
-  return {
-    wrist: pose[idx.WRIST],
-    shoulder: pose[idx.SHOULDER],
-    hip: pose[idx.HIP]
-  };
+
+  const wrist = pose[idx.WRIST];
+  const knee = pose[idx.KNEE];
+  const ankle = pose[idx.ANKLE];
+
+  if (!wrist || !knee || !ankle) return false;
+
+  // Need a meaningful shank length; if pose is garbage, ignore
+  const shank = ankle.y - knee.y; // normalized (positive if ankle lower than knee)
+  if (shank < CONFIG.MIN_SHANK_LEN_NORM) return false;
+
+  const threshold = knee.y + CONFIG.SHANK_FRACTION * shank;
+
+  // normalized y: larger means lower in image
+  return wrist.y > threshold;
+}
+
+// Positive means “deeper into floor zone”
+function floorDepth(pose, side) {
+  const idx = side === "left" ? CONFIG.LEFT : CONFIG.RIGHT;
+
+  const wrist = pose[idx.WRIST];
+  const knee = pose[idx.KNEE];
+  const ankle = pose[idx.ANKLE];
+
+  if (!wrist || !knee || !ankle) return 0;
+
+  const shank = ankle.y - knee.y;
+  if (shank < CONFIG.MIN_SHANK_LEN_NORM) return 0;
+
+  const threshold = knee.y + CONFIG.SHANK_FRACTION * shank;
+  return Math.max(0, wrist.y - threshold);
 }
 
 /* ---------------------- SNATCH PHYSICS + LOGIC ---------------------- */
@@ -307,16 +322,16 @@ function runSnatchPhysicsAndLogic(pose, timeMs) {
   const side = state.lockedSide;
   if (side !== "left" && side !== "right") return;
 
-  const s = getSideLandmarks(pose, side);
-  const wrist = s.wrist;
-  const shoulder = s.shoulder;
-  const hip = s.hip;
-  if (!wrist || !shoulder || !hip) return;
+  const idx = side === "left" ? CONFIG.LEFT : CONFIG.RIGHT;
 
-  // Optional: visibility guard (some models supply visibility)
+  const wrist = pose[idx.WRIST];
+  const shoulder = pose[idx.SHOULDER];
+  const hip = pose[idx.HIP];
+
+  if (!wrist || !shoulder || !hip) return;
   if ((wrist.visibility ?? 1) < 0.5) return;
 
-  // Lock calibration once (px/m)
+  // lock calibration once
   if (!state.lockedCalibration) {
     const torsoPx = Math.abs(shoulder.y - hip.y) * state.canvas.height;
     state.lockedCalibration = torsoPx > 0 ? torsoPx / CONFIG.TORSO_METERS : 100;
@@ -350,7 +365,6 @@ function runSnatchPhysicsAndLogic(pose, timeMs) {
   const velocity = state.smoothedVelocity;
   document.getElementById("val-velocity").textContent = velocity.toFixed(2);
 
-  // Snatch start/end zones (normalized y: smaller is higher)
   const isBelowHip = wrist.y > hip.y;
   const isAboveShoulder = wrist.y < shoulder.y;
 
@@ -365,7 +379,7 @@ function runSnatchPhysicsAndLogic(pose, timeMs) {
     if (velocity > state.currentRepPeak) state.currentRepPeak = velocity;
 
     if (isAboveShoulder && velocity < CONFIG.LOCKOUT_VEL_CUTOFF) finishRep();
-    else if (isBelowHip) state.phase = "BOTTOM"; // failed to lock out
+    else if (isBelowHip) state.phase = "BOTTOM";
   }
 
   state.prevWrist = { xNorm: wrist.x, yNorm: wrist.y, tMs: timeMs };
@@ -379,21 +393,20 @@ function finishRep() {
   document.getElementById("val-reps").textContent = String(state.repCount);
   document.getElementById("val-peak").textContent = state.currentRepPeak.toFixed(2);
 
+  const dropEl = document.getElementById("val-drop");
+
   if (state.repCount <= CONFIG.BASELINE_REPS) {
     state.baseline = avg(state.repHistory);
-    const el = document.getElementById("val-drop");
-    el.textContent = "CALC...";
-    el.style.color = "#94a3b8";
+    dropEl.textContent = "CALC...";
+    dropEl.style.color = "#94a3b8";
   } else {
     const drop = (state.baseline - state.currentRepPeak) / state.baseline;
     const dropPct = (drop * 100).toFixed(1);
+    dropEl.textContent = `-${dropPct}%`;
 
-    const el = document.getElementById("val-drop");
-    el.textContent = `-${dropPct}%`;
-
-    if (drop * 100 >= CONFIG.DROP_FAIL) el.style.color = "#ef4444";
-    else if (drop * 100 >= CONFIG.DROP_WARN) el.style.color = "#fbbf24";
-    else el.style.color = "#10b981";
+    if (drop * 100 >= CONFIG.DROP_FAIL) dropEl.style.color = "#ef4444";
+    else if (drop * 100 >= CONFIG.DROP_WARN) dropEl.style.color = "#fbbf24";
+    else dropEl.style.color = "#10b981";
   }
 }
 
@@ -403,23 +416,48 @@ function drawOverlay() {
   state.ctx.clearRect(0, 0, state.canvas.width, state.canvas.height);
   if (!state.lastPose) return;
 
-  // While ARMING: draw both sides (faint) + highlight the armed/locked side if set
-  if (state.testStage === "ARMING" || !state.sideLocked) {
-    const L = getSideLandmarks(state.lastPose, "left");
-    const R = getSideLandmarks(state.lastPose, "right");
+  // While arming: draw both wrist markers and knee lines faintly for debugging
+  if (state.isTestRunning && state.testStage === "ARMING") {
+    drawFloorDebug(state.lastPose, "left");
+    drawFloorDebug(state.lastPose, "right");
 
-    if (L.shoulder && L.hip) drawZones(L.shoulder, L.hip, 0.20);
-    if (R.shoulder && R.hip) drawZones(R.shoulder, R.hip, 0.20);
-
-    if (L.wrist) drawDot(L.wrist, state.armedSide === "left", "#60a5fa");
-    if (R.wrist) drawDot(R.wrist, state.armedSide === "right", "#f87171");
+    const Lw = state.lastPose[CONFIG.LEFT.WRIST];
+    const Rw = state.lastPose[CONFIG.RIGHT.WRIST];
+    if (Lw) drawDot(Lw, false, "#60a5fa");
+    if (Rw) drawDot(Rw, false, "#f87171");
     return;
   }
 
-  // RUNNING: draw locked side zones + dot
-  const s = getSideLandmarks(state.lastPose, state.lockedSide);
-  if (s.shoulder && s.hip) drawZones(s.shoulder, s.hip, 0.65);
-  if (s.wrist) drawDot(s.wrist, true);
+  // Running: draw zones + dot for locked side
+  if (state.sideLocked && (state.lockedSide === "left" || state.lockedSide === "right")) {
+    const idx = state.lockedSide === "left" ? CONFIG.LEFT : CONFIG.RIGHT;
+    const wrist = state.lastPose[idx.WRIST];
+    const shoulder = state.lastPose[idx.SHOULDER];
+    const hip = state.lastPose[idx.HIP];
+
+    if (shoulder && hip) drawZones(shoulder, hip, 0.65);
+    if (wrist) drawDot(wrist, true);
+  }
+}
+
+function drawFloorDebug(pose, side) {
+  const idx = side === "left" ? CONFIG.LEFT : CONFIG.RIGHT;
+  const knee = pose[idx.KNEE];
+  const ankle = pose[idx.ANKLE];
+  if (!knee || !ankle) return;
+
+  const shank = ankle.y - knee.y;
+  if (shank < CONFIG.MIN_SHANK_LEN_NORM) return;
+
+  const threshold = knee.y + CONFIG.SHANK_FRACTION * shank;
+  const yPx = threshold * state.canvas.height;
+
+  state.ctx.strokeStyle = side === "left" ? "rgba(96,165,250,0.35)" : "rgba(248,113,113,0.35)";
+  state.ctx.lineWidth = 2;
+  state.ctx.beginPath();
+  state.ctx.moveTo(0, yPx);
+  state.ctx.lineTo(state.canvas.width, yPx);
+  state.ctx.stroke();
 }
 
 function drawZones(shoulder, hip, alpha = 0.6) {
@@ -427,7 +465,6 @@ function drawZones(shoulder, hip, alpha = 0.6) {
   const w = state.canvas.width;
   const h = state.canvas.height;
 
-  // Shoulder line (lockout)
   const shoulderY = shoulder.y * h;
   ctx.strokeStyle = `rgba(16, 185, 129, ${alpha})`;
   ctx.lineWidth = 2;
@@ -436,7 +473,6 @@ function drawZones(shoulder, hip, alpha = 0.6) {
   ctx.lineTo(w, shoulderY);
   ctx.stroke();
 
-  // Hip line (backswing bottom)
   const hipY = hip.y * h;
   ctx.strokeStyle = `rgba(59, 130, 246, ${alpha})`;
   ctx.beginPath();
@@ -470,22 +506,24 @@ function setupControls() {
   startBtn.onclick = async () => {
     if (!state.isVideoReady) return;
 
-    // Begin the test immediately; first swing is used ONLY to arm side
     state.isTestRunning = true;
     state.testStage = "ARMING";
-    state.sideLocked = false;
-    state.armedSide = "unknown";
-    state.lockedSide = "unknown";
-    state.lastArmedAt = 0;
 
-    // Clear run state so once side locks, we start fresh
+    // clear handedness + counters
+    state.lockedSide = "unknown";
+    state.sideLocked = false;
+    state.floorCountLeft = 0;
+    state.floorCountRight = 0;
+    state.floorCountLocked = 0;
+
+    // clear run state so after arming we start clean
     resetRunStateOnly();
 
     startBtn.textContent = "Test Running…";
     startBtn.disabled = true;
     resetBtn.disabled = false;
 
-    setStatus("ARMING: do first backswing/snatch to pick side…", "#fbbf24");
+    setStatus("ARMING: grab bell (wrist deep below knee) to lock side…", "#fbbf24");
 
     try {
       await state.video.play();
@@ -510,19 +548,16 @@ function setupControls() {
 /* ------------------------------ RESET ------------------------------ */
 
 function resetRunStateOnly() {
-  // Physics
   state.prevWrist = null;
   state.lockedCalibration = null;
   state.smoothedVelocity = 0;
 
-  // Rep logic
   state.phase = "IDLE";
   state.repCount = 0;
   state.currentRepPeak = 0;
   state.repHistory = [];
   state.baseline = 0;
 
-  // UI
   document.getElementById("val-velocity").textContent = "0.00";
   document.getElementById("val-peak").textContent = "0.00";
   document.getElementById("val-reps").textContent = "0";
@@ -535,18 +570,12 @@ function resetAll(statusText) {
   state.isTestRunning = false;
   state.testStage = "IDLE";
 
-  state.armedSide = "unknown";
   state.lockedSide = "unknown";
   state.sideLocked = false;
-  state.lastArmedAt = 0;
 
-  state.wasBelowHipLeft = false;
-  state.wasBelowHipRight = false;
-
-  state.prevWristLeft = null;
-  state.prevWristRight = null;
-  state.motionEmaLeft = 0;
-  state.motionEmaRight = 0;
+  state.floorCountLeft = 0;
+  state.floorCountRight = 0;
+  state.floorCountLocked = 0;
 
   resetRunStateOnly();
 
