@@ -1,81 +1,86 @@
-<!DOCTYPE html>
-
+<!doctype html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>KB Velocity Tracker (Snatch)</title>
-  <link rel="stylesheet" href="style.css">
+  <meta charset="utf-8" />
+  <meta
+    name="viewport"
+    content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no"
+  />
+  <title>KB Velocity Tracker</title>
+  <link rel="stylesheet" href="style.css" />
 </head>
+
 <body>
-  <h1>🏋️ KB Velocity Tracker (Snatch)</h1>
+  <div class="app-container">
+    <header class="app-header">
+      <h1>KB Velocity Tracker</h1>
+      <div id="status-pill" class="status-pill">Initializing…</div>
+    </header>
 
-  <div class="video-container">
-    <video id="video" playsinline muted></video>
-    <canvas id="canvas"></canvas>
-    <div id="loading-overlay">Loading pose model...</div>
-  </div>
+    <div class="viewport-wrapper">
+      <div class="viewport-container">
+        <video id="video" playsinline muted></video>
+        <canvas id="canvas"></canvas>
 
-  <div class="controls">
-    <button id="btn-camera">📷 Camera</button>
-    <label class="file-label">
-      📁 Upload Video
-      <input type="file" id="file-input" accept="video/*">
-    </label>
-    <button id="btn-start-test" disabled>▶ Start Test</button>
-    <button id="btn-reset" disabled>⟳ Reset</button>
-  </div>
-
-  <div id="status-pill">Initializing...</div>
-
-  <div class="metrics">
-    <div class="metric-card">
-      <div class="metric-label">Total Reps</div>
-      <div class="metric-value" id="val-reps">0</div>
+        <div id="loading-overlay" class="overlay">
+          <div class="spinner"></div>
+          <p>Loading AI Model…</p>
+        </div>
+      </div>
     </div>
 
-```
-<div class="metric-card">
-  <div class="metric-label">Sets</div>
-  <div class="metric-value" id="val-sets">0</div>
-</div>
+    <section class="dashboard">
+      <div class="control-group">
+        <label>1. Select Source</label>
+        <div class="btn-row">
+          <button id="btn-camera" class="btn btn-primary">Camera</button>
+          <button
+            id="btn-upload"
+            class="btn btn-secondary"
+            onclick="document.getElementById('file-input').click()"
+          >
+            Upload Video
+          </button>
+          <input id="file-input" type="file" accept="video/*" />
+        </div>
+      </div>
 
-<div class="metric-card">
-  <div class="metric-label">Velocity</div>
-  <div class="metric-value">
-    <span id="val-velocity">0.00</span>
-    <span class="metric-unit">m/s</span>
-  </div>
-</div>
+      <div class="control-group">
+        <label>2. Test Controls</label>
+        <div class="btn-row">
+          <button id="btn-start-test" class="btn btn-success" disabled>Start Test</button>
+          <button id="btn-reset" class="btn btn-outline" disabled>Reset</button>
+        </div>
+      </div>
 
-<div class="metric-card">
-  <div class="metric-label">Peak</div>
-  <div class="metric-value">
-    <span id="val-peak">0.00</span>
-    <span class="metric-unit">m/s</span>
-  </div>
-</div>
+      <div class="metrics-grid">
+        <div class="metric-card">
+          <span class="label">Velocity</span>
+          <span class="value" id="val-velocity">0.00</span>
+          <span class="unit">m/s</span>
+        </div>
 
-<div class="metric-card">
-  <div class="metric-label">Drop-off</div>
-  <div class="metric-value" id="val-drop">--</div>
-</div>
-```
+        <div class="metric-card">
+          <span class="label">Peak (Rep)</span>
+          <span class="value" id="val-peak">0.00</span>
+          <span class="unit">m/s</span>
+        </div>
 
-  </div>
+        <div class="metric-card">
+          <span class="label">Reps</span>
+          <span class="value" id="val-reps">0</span>
+          <span class="unit">count</span>
+        </div>
 
-  <!-- Debug bar at bottom -->
-
-  <div id="debug-bar">
-    <div>Stage: <span id="dbg-stage">IDLE</span></div>
-    <div>Side: <span id="dbg-side">--</span></div>
-    <div>Phase: <span id="dbg-phase">IDLE</span></div>
-    <div>Vy: <span id="dbg-vy">0</span></div>
-    <div>Spd: <span id="dbg-spd">0</span></div>
-    <div>WristY: <span id="dbg-wrist">--</span></div>
+        <div class="metric-card highlight">
+          <span class="label">Drop %</span>
+          <span class="value" id="val-drop">--</span>
+          <span class="unit">threshold</span>
+        </div>
+      </div>
+    </section>
   </div>
 
   <script type="module" src="app.js"></script>
-
 </body>
 </html>
