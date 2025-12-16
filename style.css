@@ -1,476 +1,96 @@
-/* CSS Variables for theming and status colors */
 :root {
-    --primary-bg: #1a1a2e;
-    --secondary-bg: #16213e;
-    --card-bg: #0f3460;
-    --text-primary: #eee;
-    --text-secondary: #aaa;
-    --accent-blue: #00adb5;
-    --accent-green: #00ff88;
-    --status-green: #4caf50;
-    --status-yellow: #ff9800;
-    --status-red: #f44336;
-    --border-radius: 12px;
-    --shadow: 0 4px 6px rgba(0, 0, 0, 0.3);
-}
-
-/* Global Styles */
-* {
-    margin: 0;
-    padding: 0;
-    box-sizing: border-box;
+    --primary: #2563eb;
+    --bg: #0f172a;
+    --text: #f8fafc;
 }
 
 body {
-    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
-    background: linear-gradient(135deg, var(--primary-bg) 0%, var(--secondary-bg) 100%);
-    color: var(--text-primary);
-    min-height: 100vh;
-    line-height: 1.6;
-}
-
-.container {
-    max-width: 1200px;
-    margin: 0 auto;
+    background-color: var(--bg);
+    color: var(--text);
+    font-family: system-ui, -apple-system, sans-serif;
+    margin: 0;
     padding: 20px;
-}
-
-/* Header */
-header {
-    text-align: center;
-    margin-bottom: 30px;
-    padding: 20px 0;
-}
-
-header h1 {
-    font-size: 2.5rem;
-    margin-bottom: 10px;
-    background: linear-gradient(135deg, var(--accent-blue), var(--accent-green));
-    -webkit-background-clip: text;
-    -webkit-text-fill-color: transparent;
-    background-clip: text;
-}
-
-.subtitle {
-    color: var(--text-secondary);
-    font-size: 1rem;
-}
-
-/* Exercise Selection */
-.exercise-selection,
-.mode-selection {
-    background: var(--card-bg);
-    border-radius: var(--border-radius);
-    padding: 30px;
-    margin-bottom: 30px;
-    box-shadow: var(--shadow);
-}
-
-.exercise-selection h2,
-.mode-selection h2 {
-    text-align: center;
-    margin-bottom: 20px;
-    color: var(--accent-blue);
-}
-
-.exercise-buttons,
-.mode-buttons {
     display: flex;
-    flex-wrap: wrap;
-    gap: 15px;
     justify-content: center;
 }
 
-.exercise-btn,
-.mode-btn {
-    flex: 1 1 calc(50% - 15px);
-    min-width: 150px;
-    padding: 15px 20px;
-    font-size: 1rem;
-    font-weight: 600;
-    background: var(--secondary-bg);
-    color: var(--text-primary);
-    border: 2px solid var(--accent-blue);
-    border-radius: var(--border-radius);
-    cursor: pointer;
-    transition: all 0.3s ease;
-}
-
-.exercise-btn:hover,
-.mode-btn:hover {
-    background: var(--accent-blue);
-    transform: translateY(-2px);
-    box-shadow: 0 6px 12px rgba(0, 173, 181, 0.3);
-}
-
-.exercise-btn.selected,
-.mode-btn.selected {
-    background: var(--accent-blue);
-    border-color: var(--accent-green);
-}
-
-.mode-btn {
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    gap: 10px;
-}
-
-.mode-btn .icon {
-    font-size: 2rem;
-}
-
-/* Video Section */
-.video-section {
-    margin-bottom: 30px;
-}
-
-.video-container {
-    position: relative;
-    max-width: 640px;
-    margin: 0 auto 20px;
-    background: #000;
-    border-radius: var(--border-radius);
-    overflow: hidden;
-    box-shadow: var(--shadow);
-}
-
-#webcam,
-#canvas {
-    display: block;
+.app-container {
     width: 100%;
-    height: auto;
+    max-width: 800px;
 }
 
-#canvas {
-    position: absolute;
-    top: 0;
-    left: 0;
+/* --- THE VIEWPORT (Fixes the weird sizing) --- */
+.viewport-container {
+    position: relative;
+    width: 100%;
+    /* Create a 4:3 aspect ratio container */
+    aspect-ratio: 4/3; 
+    background: #000;
+    border-radius: 12px;
+    overflow: hidden;
+    margin: 20px 0;
+    border: 2px solid #334155;
 }
 
-.loading-overlay {
+video, canvas {
     position: absolute;
     top: 0;
     left: 0;
     width: 100%;
     height: 100%;
-    background: rgba(0, 0, 0, 0.8);
+    object-fit: contain; /* Ensures video isn't stretched */
+}
+
+/* --- CONTROLS & UI --- */
+.controls-section {
     display: flex;
-    flex-direction: column;
-    justify-content: center;
-    align-items: center;
-    z-index: 10;
-}
-
-.spinner {
-    border: 4px solid rgba(255, 255, 255, 0.1);
-    border-top: 4px solid var(--accent-blue);
-    border-radius: 50%;
-    width: 50px;
-    height: 50px;
-    animation: spin 1s linear infinite;
-}
-
-@keyframes spin {
-    0% { transform: rotate(0deg); }
-    100% { transform: rotate(360deg); }
-}
-
-/* Controls */
-.controls {
-    display: flex;
+    justify-content: space-between;
     gap: 10px;
-    justify-content: center;
     margin-bottom: 20px;
-    flex-wrap: wrap;
 }
 
-.btn {
-    padding: 12px 24px;
-    font-size: 1rem;
-    font-weight: 600;
-    border: none;
-    border-radius: var(--border-radius);
-    cursor: pointer;
-    transition: all 0.3s ease;
-    min-width: 120px;
-}
-
-.btn:disabled {
-    opacity: 0.5;
-    cursor: not-allowed;
-}
-
-.btn-primary {
-    background: var(--accent-green);
-    color: var(--primary-bg);
-}
-
-.btn-primary:hover:not(:disabled) {
-    background: #00dd77;
-    box-shadow: 0 4px 12px rgba(0, 255, 136, 0.4);
-}
-
-.btn-danger {
-    background: var(--status-red);
-    color: white;
-}
-
-.btn-danger:hover:not(:disabled) {
-    background: #d32f2f;
-    box-shadow: 0 4px 12px rgba(244, 67, 54, 0.4);
-}
-
-.btn-secondary {
-    background: var(--secondary-bg);
-    color: var(--text-primary);
-    border: 2px solid var(--accent-blue);
-}
-
-.btn-secondary:hover {
-    background: var(--card-bg);
-}
-
-/* Metrics Grid */
 .metrics-grid {
     display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
-    gap: 15px;
-    margin-bottom: 20px;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 10px;
 }
 
 .metric-card {
-    background: var(--card-bg);
-    border-radius: var(--border-radius);
-    padding: 20px;
+    background: #1e293b;
+    padding: 15px;
+    border-radius: 8px;
     text-align: center;
-    box-shadow: var(--shadow);
-    transition: transform 0.3s ease;
+    border: 1px solid #334155;
 }
 
-.metric-card:hover {
-    transform: translateY(-2px);
-}
-
-.metric-label {
-    font-size: 0.85rem;
-    color: var(--text-secondary);
-    margin-bottom: 8px;
-    text-transform: uppercase;
-    letter-spacing: 1px;
-}
-
-.metric-value {
-    font-size: 2rem;
+.metric-card .value {
+    display: block;
+    font-size: 1.5rem;
     font-weight: bold;
-    color: var(--accent-blue);
-    margin-bottom: 5px;
+    color: var(--primary);
 }
 
-.metric-unit {
-    font-size: 0.9rem;
-    color: var(--text-secondary);
-}
-
-/* Status Card Colors */
-.status-card.status-optimal {
-    border: 2px solid var(--status-green);
-}
-
-.status-card.status-optimal .status-text {
-    color: var(--status-green);
-}
-
-.status-card.status-warning {
-    border: 2px solid var(--status-yellow);
-}
-
-.status-card.status-warning .status-text {
-    color: var(--status-yellow);
-}
-
-.status-card.status-critical {
-    border: 2px solid var(--status-red);
-    animation: pulse 1.5s ease-in-out infinite;
-}
-
-.status-card.status-critical .status-text {
-    color: var(--status-red);
-}
-
-@keyframes pulse {
-    0%, 100% { opacity: 1; }
-    50% { opacity: 0.7; }
-}
-
-/* Alert */
-.alert {
-    background: var(--status-red);
-    color: white;
-    padding: 15px 20px;
-    border-radius: var(--border-radius);
-    margin-bottom: 20px;
-    text-align: center;
+.btn {
+    padding: 10px 20px;
+    border-radius: 6px;
+    border: none;
+    cursor: pointer;
     font-weight: 600;
-    box-shadow: var(--shadow);
-    animation: slideIn 0.3s ease-out;
 }
 
-@keyframes slideIn {
-    from {
-        transform: translateY(-20px);
-        opacity: 0;
-    }
-    to {
-        transform: translateY(0);
-        opacity: 1;
-    }
-}
+.btn-primary { background: var(--primary); color: white; }
+.btn-secondary { background: #475569; color: white; }
 
-/* Results Section */
-.results-section {
-    background: var(--card-bg);
-    border-radius: var(--border-radius);
-    padding: 30px;
-    box-shadow: var(--shadow);
-}
-
-.results-section h2 {
-    color: var(--accent-blue);
-    margin-bottom: 20px;
-    text-align: center;
-}
-
-.no-results {
-    text-align: center;
-    color: var(--text-secondary);
-    padding: 40px;
-    font-style: italic;
-}
-
-.result-item {
-    background: var(--secondary-bg);
-    border-radius: var(--border-radius);
-    padding: 20px;
-    margin-bottom: 15px;
-    border-left: 4px solid var(--accent-blue);
-}
-
-.result-header {
+/* --- LOADING OVERLAY --- */
+.overlay {
+    position: absolute;
+    top: 0; left: 0; right: 0; bottom: 0;
+    background: rgba(15, 23, 42, 0.9);
     display: flex;
-    justify-content: space-between;
+    flex-direction: column;
     align-items: center;
-    margin-bottom: 15px;
-    flex-wrap: wrap;
-    gap: 10px;
+    justify-content: center;
+    z-index: 10;
 }
+.hidden { display: none !important; }
 
-.result-date {
-    font-weight: 600;
-    color: var(--accent-green);
-}
-
-.result-exercise {
-    color: var(--text-secondary);
-    font-size: 0.9rem;
-}
-
-.result-stats {
-    display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
-    gap: 10px;
-}
-
-.result-stat {
-    text-align: center;
-}
-
-.result-stat-label {
-    font-size: 0.8rem;
-    color: var(--text-secondary);
-    margin-bottom: 5px;
-}
-
-.result-stat-value {
-    font-size: 1.2rem;
-    font-weight: bold;
-    color: var(--accent-blue);
-}
-
-/* Footer */
-footer {
-    text-align: center;
-    padding: 30px 0;
-    color: var(--text-secondary);
-    font-size: 0.9rem;
-}
-
-/* Responsive Design */
-@media (max-width: 768px) {
-    header h1 {
-        font-size: 2rem;
-    }
-
-    .subtitle {
-        font-size: 0.9rem;
-    }
-
-    .exercise-btn,
-    .mode-btn {
-        flex: 1 1 100%;
-    }
-
-    .metrics-grid {
-        grid-template-columns: repeat(2, 1fr);
-    }
-
-    .controls {
-        flex-direction: column;
-    }
-
-    .btn {
-        width: 100%;
-    }
-
-    .exercise-selection,
-    .mode-selection,
-    .results-section {
-        padding: 20px;
-    }
-}
-
-@media (max-width: 480px) {
-    .container {
-        padding: 10px;
-    }
-
-    header h1 {
-        font-size: 1.5rem;
-    }
-
-    .metric-value {
-        font-size: 1.5rem;
-    }
-
-    .metric-label {
-        font-size: 0.75rem;
-    }
-
-    .result-stats {
-        grid-template-columns: 1fr;
-    }
-}
-
-/* Print Styles */
-@media print {
-    .video-section,
-    .controls,
-    .exercise-selection,
-    .mode-selection {
-        display: none;
-    }
-
-    .results-section {
-        box-shadow: none;
-    }
-}
