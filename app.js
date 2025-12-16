@@ -88,11 +88,48 @@ function startUploadMode(event) {
     state.video.src = url;
     
     // Upload settings: Enable controls, Disable loop
-    state.video.controls = true; 
+    state.video.controls = false; 
     state.video.loop = false; 
     
     playVideo();
 }
+function setupVideoControls() {
+    const playBtn = document.getElementById('btn-play-pause');
+    const seekBar = document.getElementById('seek-bar');
+    const timeDisplay = document.getElementById('time-display');
+    const video = state.video;
+
+    // 1. Play/Pause Toggle
+    playBtn.addEventListener('click', () => {
+        if (video.paused) {
+            video.play();
+            playBtn.textContent = "⏸";
+        } else {
+            video.pause();
+            playBtn.textContent = "▶";
+        }
+    });
+
+    // 2. Seek Bar (Input)
+    seekBar.addEventListener('input', () => {
+        video.currentTime = seekBar.value;
+    });
+
+    // 3. Update Bar while video plays
+    video.addEventListener('timeupdate', () => {
+        // Update slider position
+        seekBar.max = video.duration;
+        seekBar.value = video.currentTime;
+        
+        // Update text (0:00)
+        const mins = Math.floor(video.currentTime / 60);
+        const secs = Math.floor(video.currentTime % 60).toString().padStart(2, '0');
+        timeDisplay.textContent = `${mins}:${secs}`;
+    });
+}
+
+// CALL THIS AT THE BOTTOM OF initializeApp()
+setupVideoControls();
 
 // --- SHARED STARTUP ---
 async function playVideo() {
