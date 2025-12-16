@@ -65,6 +65,47 @@ canvas {
     gap: 10px;
     margin-bottom: 20px;
 }
+/* --- CUSTOM VIDEO CONTROLS --- */
+.video-controls {
+    position: absolute;
+    bottom: 0;
+    left: 0;
+    width: 100%;
+    background: rgba(15, 23, 42, 0.8); /* Semi-transparent dark blue */
+    padding: 10px;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    z-index: 10; /* Highest layer = always clickable */
+    opacity: 0;
+    transition: opacity 0.3s;
+}
+
+/* Show controls when hovering over the video container */
+.viewport-container:hover .video-controls {
+    opacity: 1;
+}
+
+.control-btn {
+    background: none;
+    border: none;
+    color: white;
+    font-size: 1.2rem;
+    cursor: pointer;
+    width: 30px;
+}
+
+#seek-bar {
+    flex-grow: 1; /* Take up remaining space */
+    cursor: pointer;
+}
+
+#time-display {
+    color: #cbd5e1;
+    font-size: 0.9rem;
+    font-variant-numeric: tabular-nums;
+    width: 40px;
+}
 
 .metrics-grid {
     display: grid;
