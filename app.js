@@ -29,8 +29,8 @@ let state = {
     repHistory: [],
     baseline: 0,
     
-    // Visual Cache (To redraw lines when paused)
-    lastLandmarks: null
+    // Cache for smoother drawing
+    lastPose: null
 };
 
 async function initializeApp() {
@@ -51,24 +51,26 @@ async function initializeApp() {
                 delegate: "GPU"
             },
             runningMode: "VIDEO",
-            numPoses: 1
+            numPoses: 1,
+            minPoseDetectionConfidence: 0.5,
+            minTrackingConfidence: 0.5
         });
 
         state.isModelLoaded = true;
         document.getElementById('loading-overlay').classList.add('hidden');
         document.getElementById('status-pill').textContent = "Ready";
 
-        // Wiring
+        // Setup Inputs
         document.getElementById('btn-camera').onclick = startCamera;
         document.getElementById('file-input').onchange = handleUpload;
         
+        // Setup Event Listeners
         state.video.addEventListener('loadeddata', onVideoReady);
-        state.video.addEventListener('seeked', forceSingleScan); // Force scan on reset/scrub
         
         setupControls();
         
-        // START PERMANENT UI LOOP
-        requestAnimationFrame(uiLoop);
+        // START THE MASTER LOOP
+        requestAnimationFrame(masterLoop);
 
     } catch (e) { alert(e.message); }
 }
@@ -76,8 +78,12 @@ async function initializeApp() {
 function handleUpload(e) {
     const file = e.target.files[0];
     if (!file) return;
+    
+    // Full Reset
     hardResetState();
     state.isVideoReady = false; 
+    state.lastPose = null;
+    
     document.getElementById('status-pill').textContent = "Loading...";
     state.video.src = URL.createObjectURL(file);
     state.video.load(); 
@@ -96,61 +102,69 @@ function onVideoReady() {
     state.isVideoReady = true;
     state.canvas.width = state.video.videoWidth;
     state.canvas.height = state.video.videoHeight;
-    forceSingleScan(); // Scan frame 0 immediately
+    
     document.getElementById('btn-start-test').disabled = false;
     document.getElementById('status-pill').textContent = "Video Loaded";
+    
+    // CRITICAL FIX: "Prime" the video.
+    // Play for 50ms then pause. This forces the browser to render the first frame
+    // so MediaPipe can actually see the body and draw the blue line.
+    primeVideo();
 }
 
-function forceSingleScan() {
-    if(!state.isModelLoaded || !state.isVideoReady) return;
-    // Process current frame (even if paused)
-    const timeMs = state.video.currentTime * 1000;
-    const result = state.landmarker.detectForVideo(state.video, timeMs);
-    if(result.landmarks && result.landmarks.length > 0) {
-        state.lastLandmarks = result.landmarks[0]; // Cache for UI Loop
+function primeVideo() {
+    const playPromise = state.video.play();
+    if (playPromise !== undefined) {
+        playPromise.then(() => {
+            // Wait 100ms for pixels to render, then pause
+            setTimeout(() => {
+                if(!state.isTestRunning) state.video.pause();
+                state.video.currentTime = 0; // Rewind to start
+            }, 100);
+        }).catch(error => {
+            console.log("Auto-play prevented. User interaction required.");
+        });
     }
 }
 
-// --- THE PERMANENT LOOP ---
-// Runs 60fps regardless of video state to keep lines/dots visible
-function uiLoop() {
-    // 1. If playing, run detection (AI)
-    if (!state.video.paused && state.isModelLoaded && state.isVideoReady) {
+// --- MASTER LOOP (Handles AI + Drawing + Physics) ---
+function masterLoop() {
+    // 1. RUN AI (If model loaded and video exists)
+    if (state.isModelLoaded && state.isVideoReady && state.video.readyState >= 2) {
+        // Use performance.now() to ensure timestamp always moves forward
+        // This fixes the "Reset button doesn't reset MediaPipe" bug
         const result = state.landmarker.detectForVideo(state.video, performance.now());
-        if(result.landmarks && result.landmarks.length > 0) {
-            state.lastLandmarks = result.landmarks[0];
+        
+        if (result.landmarks && result.landmarks.length > 0) {
+            state.lastPose = result.landmarks[0];
             
-            // Run Physics ONLY during playback
-            if(state.isTestRunning) {
-                runBiomechanics(state.lastLandmarks, state.video.currentTime * 1000);
+            // Only run physics if test is running AND video is actually playing
+            if (state.isTestRunning && !state.video.paused) {
+                runPhysics(state.lastPose, state.video.currentTime * 1000);
             }
         }
     }
 
-    // 2. Always Draw (Visuals)
-    drawEverything();
-    
-    requestAnimationFrame(uiLoop);
-}
-
-function drawEverything() {
-    // Clear
+    // 2. DRAWING (Always run this, even if paused)
     state.ctx.clearRect(0, 0, state.canvas.width, state.canvas.height);
     
-    if (state.lastLandmarks) {
-        const pose = state.lastLandmarks;
+    if (state.lastPose) {
+        const pose = state.lastPose;
         const wrist = pose[CONFIG.WRIST_ID];
         const shoulder = pose[CONFIG.SHOULDER_ID];
         const hip = pose[CONFIG.HIP_ID];
 
+        // Draw Lines & Dots
         if (wrist && shoulder && hip) {
             drawZones(shoulder, hip);
             drawDot(wrist);
         }
     }
+    
+    requestAnimationFrame(masterLoop);
 }
 
-function runBiomechanics(pose, time) {
+function runPhysics(pose, time) {
     const wrist = pose[CONFIG.WRIST_ID];
     const shoulder = pose[CONFIG.SHOULDER_ID];
     const hip = pose[CONFIG.HIP_ID];
@@ -161,12 +175,14 @@ function runBiomechanics(pose, time) {
     }
 
     const dt = (time - state.prevWrist.time) / 1000;
-    if (dt <= 0.001) return;
+    if (dt <= 0.001) return; // Ignore micro-steps
 
-    // Calc Velocity
+    // Velocity Math
     const dx = (wrist.x - state.prevWrist.x) * state.canvas.width;
     const dy = (wrist.y - state.prevWrist.y) * state.canvas.height;
     const distPx = Math.sqrt(dx*dx + dy*dy);
+    
+    // Calibration: Body segment (Shoulder to Hip) = 0.5m
     const bodySegmentPx = Math.abs(shoulder.y - hip.y) * state.canvas.height;
     const pixelsPerMeter = bodySegmentPx / 0.5; 
     const velocity = (distPx / pixelsPerMeter) / dt;
@@ -180,19 +196,19 @@ function runBiomechanics(pose, time) {
     if (state.phase === 'IDLE' || state.phase === 'LOCKOUT') {
         if (isBelowHip) {
             state.phase = 'BOTTOM';
-            document.getElementById('val-velocity').style.color = "#fbbf24";
+            document.getElementById('val-velocity').style.color = "#fbbf24"; // Yellow
         }
     } else if (state.phase === 'BOTTOM') {
         if (wrist.y < hip.y) {
             state.phase = 'CONCENTRIC';
             state.currentRepPeak = 0;
-            document.getElementById('val-velocity').style.color = "#3b82f6";
+            document.getElementById('val-velocity').style.color = "#3b82f6"; // Blue
         }
     } else if (state.phase === 'CONCENTRIC') {
         if (velocity > state.currentRepPeak) state.currentRepPeak = velocity;
         
-        if (isAboveShoulder && velocity < 0.5) finishRep();
-        else if (isBelowHip) state.phase = 'BOTTOM';
+        if (isAboveShoulder && velocity < 0.5) finishRep(); // Done
+        else if (isBelowHip) state.phase = 'BOTTOM'; // Failed rep, reset
     }
 
     state.prevWrist = { x: wrist.x, y: wrist.y, time: time };
@@ -205,8 +221,9 @@ function finishRep() {
     
     document.getElementById('val-reps').textContent = state.repCount;
     document.getElementById('val-peak').textContent = state.currentRepPeak.toFixed(2);
-    document.getElementById('val-velocity').style.color = "#10b981";
+    document.getElementById('val-velocity').style.color = "#10b981"; // Green
 
+    // Drop-off Logic
     if (state.repCount <= 3) {
         const sum = state.repHistory.reduce((a, b) => a + b, 0);
         state.baseline = sum / state.repHistory.length;
@@ -223,21 +240,24 @@ function finishRep() {
     }
 }
 
+// --- VISUALS ---
 function drawZones(shoulder, hip) {
     const ctx = state.ctx;
     const w = state.canvas.width;
     const h = state.canvas.height;
     
+    // Lockout Line (Green)
     const shoulderY = shoulder.y * h;
-    ctx.strokeStyle = "rgba(16, 185, 129, 0.5)"; 
+    ctx.strokeStyle = "rgba(16, 185, 129, 0.6)"; 
     ctx.lineWidth = 2;
     ctx.beginPath();
     ctx.moveTo(0, shoulderY);
     ctx.lineTo(w, shoulderY);
     ctx.stroke();
     
+    // Start Line (Blue)
     const hipY = hip.y * h;
-    ctx.strokeStyle = "rgba(59, 130, 246, 0.5)"; 
+    ctx.strokeStyle = "rgba(59, 130, 246, 0.6)"; 
     ctx.beginPath();
     ctx.moveTo(0, hipY);
     ctx.lineTo(w, hipY);
@@ -251,6 +271,10 @@ function drawDot(wrist) {
     state.ctx.beginPath();
     state.ctx.arc(x, y, 10, 0, 2*Math.PI);
     state.ctx.fill();
+    state.ctx.fillStyle = "white"; // Center dot
+    state.ctx.beginPath();
+    state.ctx.arc(x, y, 4, 0, 2*Math.PI);
+    state.ctx.fill();
 }
 
 function hardResetState() {
@@ -260,8 +284,9 @@ function hardResetState() {
     state.phase = 'IDLE';
     state.repHistory = [];
     state.baseline = 0;
-    // Don't clear lastLandmarks here, so we still see the pose while waiting
+    state.lastPose = null; // Clear old skeleton
     
+    state.ctx.clearRect(0, 0, state.canvas.width, state.canvas.height);
     document.getElementById('val-velocity').textContent = "0.00";
     document.getElementById('val-peak').textContent = "0.00";
     document.getElementById('val-reps').textContent = "0";
@@ -292,7 +317,9 @@ function setupControls() {
     resetBtn.onclick = () => {
         state.video.pause();
         hardResetState();
-        state.video.currentTime = 0; // Triggers 'seeked' -> forceSingleScan
+        state.video.currentTime = 0;
+        // Prime it again so we see the first frame lines
+        primeVideo();
     };
 }
 
