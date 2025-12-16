@@ -1,0 +1,99 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Kettlebell Velocity Tracker</title>
+    <link rel="stylesheet" href="style.css">
+    <!-- Preconnect to MediaPipe CDN for faster loading -->
+    <link rel="preconnect" href="https://cdn.jsdelivr.net">
+</head>
+<body>
+
+<div class="app-container">
+    
+    <!-- HEADER -->
+    <header>
+        <h1>KB Velocity Tracker</h1>
+        <div id="status-pill" class="status-pill">System Ready</div>
+    </header>
+
+    <!-- MAIN VIDEO FEED -->
+    <div class="viewport-container">
+        <!-- The video element (hidden or visible, acts as source) -->
+        <video id="video" playsinline muted></video>
+        <!-- The canvas overlay (drawing the skeleton + metrics) -->
+        <canvas id="canvas"></canvas>
+        
+        <!-- Startup / Loading Overlay -->
+        <div id="loading-overlay" class="overlay hidden">
+            <div class="spinner"></div>
+            <p>Initializing MediaPipe AI...</p>
+        </div>
+    </div>
+
+    <!-- CONTROL PANEL -->
+    <div class="controls-section">
+        <!-- Source Selection -->
+        <div class="button-group source-controls">
+            <button id="btn-camera" class="btn btn-primary">
+                📷 Use Camera
+            </button>
+            <button id="btn-upload" class="btn btn-secondary" onclick="document.getElementById('video-upload').click()">
+                📂 Upload Video
+            </button>
+            <input type="file" id="video-upload" accept="video/*" style="display:none">
+        </div>
+
+        <!-- Test Controls (Disabled until video is ready) -->
+        <div class="button-group test-controls">
+            <button id="btn-start-test" class="btn btn-success" disabled>Start Test</button>
+            <button id="btn-stop-test" class="btn btn-danger" disabled>Stop</button>
+            <button id="btn-reset" class="btn btn-outline" disabled>Reset</button>
+        </div>
+    </div>
+
+    <!-- LIVE METRICS DASHBOARD -->
+    <div class="metrics-grid">
+        <div class="metric-card">
+            <span class="label">Current Velocity</span>
+            <span class="value" id="val-velocity">0.00</span>
+            <span class="unit">m/s</span>
+        </div>
+        
+        <div class="metric-card">
+            <span class="label">Rep Peak</span>
+            <span class="value" id="val-peak">0.00</span>
+            <span class="unit">m/s</span>
+        </div>
+
+        <div class="metric-card">
+            <span class="label">Reps Completed</span>
+            <span class="value" id="val-reps">0</span>
+            <span class="unit">count</span>
+        </div>
+
+        <div class="metric-card highlight-card">
+            <span class="label">Velocity Drop</span>
+            <span class="value" id="val-drop">0%</span>
+            <span class="unit">Threshold</span>
+        </div>
+    </div>
+
+    <!-- ALERT BANNER (Populates dynamically) -->
+    <div id="alert-banner" class="alert-banner hidden"></div>
+
+    <!-- RESULTS SUMMARY (Hidden by default) -->
+    <div id="results-area" class="results-area hidden">
+        <h3>Test Results</h3>
+        <div id="results-content"></div>
+        <button onclick="document.getElementById('results-area').classList.add('hidden')" class="btn btn-sm">Close</button>
+    </div>
+
+</div>
+
+<!-- Load the Application Logic -->
+<script type="module" src="app.js"></script>
+
+</body>
+</html>
