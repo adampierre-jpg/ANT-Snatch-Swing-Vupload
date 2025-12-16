@@ -186,4 +186,10 @@ function renderLoop(timestamp) {
 }
 
 initializeApp();
+async function initializeApp() {
+    // ... all the mediapipe loading code ...
+
+    // AT THE VERY END OF THIS FUNCTION:
+    setupVideoControls(); 
+}
 
