@@ -1,26 +1,40 @@
 import { PoseLandmarker, FilesetResolver } from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/vision_bundle.mjs";
 
 const CONFIG = {
-    WRIST_INDEX: 16, 
-    CONFIDENCE: 0.3,
-    TRACKING_CONFIDENCE: 0.3,
-    SMOOTHING: 0 
+    // LANDMARKS (Right Side Defaults)
+    WRIST_ID: 16,
+    SHOULDER_ID: 12,
+    HIP_ID: 24,
+    
+    // PHYSICS
+    SMOOTHING: 3,
+    MIN_ROM: 0.3, // Minimum vertical Range of Motion (meters) to count as a rep
+    
+    // ALERTS
+    DROP_WARN: 15, // 15% drop
+    DROP_FAIL: 20  // 20% drop
 };
 
 let state = {
+    // Infrastructure
     video: null,
     canvas: null,
     ctx: null,
     landmarker: null,
-    
-    // Flags
     isModelLoaded: false,
     isVideoReady: false,
     isTestRunning: false,
     
-    // Data
+    // Tracking Data
     prevWrist: null,
-    maxVelocity: 0
+    velocityBuffer: [],
+    
+    // RECOVERY / COACHING STATE
+    phase: 'IDLE', // Phases: IDLE -> BOTTOM -> CONCENTRIC -> LOCKOUT
+    repCount: 0,
+    currentRepPeak: 0,
+    repHistory: [],
+    baseline: 0
 };
 
 async function initializeApp() {
@@ -28,9 +42,9 @@ async function initializeApp() {
         state.video = document.getElementById('video');
         state.canvas = document.getElementById('canvas');
         state.ctx = state.canvas.getContext('2d');
-
-        console.log("🚀 Starting App...");
-
+        
+        console.log("🚀 Starting Biomechanics Engine...");
+        
         const visionGen = await FilesetResolver.forVisionTasks(
             "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/wasm"
         );
@@ -41,59 +55,33 @@ async function initializeApp() {
                 delegate: "GPU"
             },
             runningMode: "VIDEO",
-            numPoses: 1,
-            minPoseDetectionConfidence: CONFIG.CONFIDENCE,
-            minTrackingConfidence: CONFIG.TRACKING_CONFIDENCE
+            numPoses: 1
         });
 
-        console.log("✅ AI Model Loaded");
         state.isModelLoaded = true;
         document.getElementById('loading-overlay').classList.add('hidden');
-        document.getElementById('status-pill').textContent = "Select Video Source";
+        document.getElementById('status-pill').textContent = "Ready";
 
-        // Inputs
         document.getElementById('btn-camera').onclick = startCamera;
         document.getElementById('file-input').onchange = handleUpload;
         
-        // --- EVENT LISTENERS ---
-        // 'loadeddata': Fires when video is ready to play
         state.video.addEventListener('loadeddata', onVideoReady);
-        // 'seeked': Fires when user scrubs or we rewind
         state.video.addEventListener('seeked', () => {
-            // Only process if video is ready (avoids error on empty source)
-            if (state.isVideoReady) {
-                processSingleFrame(state.video.currentTime * 1000);
-            }
+             if(state.isVideoReady) processFrame(state.video.currentTime * 1000);
         });
         
         setupControls();
 
-    } catch (e) {
-        console.error(e);
-        alert("Startup Error: " + e.message);
-    }
+    } catch (e) { alert(e.message); }
 }
 
-/**
- * SOURCE HANDLING
- */
 function handleUpload(e) {
     const file = e.target.files[0];
     if (!file) return;
-    
-    console.log("📂 File Selected");
-    
-    // 1. NUKE OLD STATE
     hardResetState();
-    
-    // 2. Set Loading UI
     state.isVideoReady = false; 
-    document.getElementById('status-pill').textContent = "Loading Video...";
-    document.getElementById('btn-start-test').disabled = true;
-    
-    // 3. Load New Source
-    const url = URL.createObjectURL(file);
-    state.video.src = url;
+    document.getElementById('status-pill').textContent = "Loading...";
+    state.video.src = URL.createObjectURL(file);
     state.video.load(); 
 }
 
@@ -103,135 +91,202 @@ async function startCamera() {
         hardResetState();
         state.video.srcObject = stream;
         state.video.src = "";
-    } catch (e) {
-        alert("Camera Error: " + e.message);
-    }
+    } catch (e) { alert(e.message); }
 }
 
 function onVideoReady() {
-    console.log("✅ Video Loaded");
     state.isVideoReady = true;
-    
-    // Resize canvas
     state.canvas.width = state.video.videoWidth;
     state.canvas.height = state.video.videoHeight;
-    
-    // Force immediate scan of frame 0
-    processSingleFrame(0); 
-    
+    processFrame(0); 
     document.getElementById('btn-start-test').disabled = false;
-    document.getElementById('status-pill').textContent = "Ready to Test";
-}
-
-/**
- * CORE LOGIC
- */
-function processSingleFrame(timeMs) {
-    if (!state.isModelLoaded || !state.isVideoReady) return;
-
-    // Detect
-    const result = state.landmarker.detectForVideo(state.video, timeMs);
-    
-    // Clear Canvas
-    state.ctx.clearRect(0, 0, state.canvas.width, state.canvas.height);
-    
-    if (result.landmarks && result.landmarks.length > 0) {
-        const wrist = result.landmarks[0][CONFIG.WRIST_INDEX];
-        if (wrist) {
-            drawDot(wrist);
-            
-            // Update UI Status if not running
-            const status = document.getElementById('status-pill');
-            if (!state.isTestRunning) {
-                status.textContent = "Wrist Found ✓";
-                status.style.color = "#10b981";
-            }
-
-            // Physics (Only if Test Running)
-            if (state.isTestRunning) {
-                calculatePhysics(wrist, timeMs);
-            }
-        }
-    } else {
-        // Show scanning if idle
-        if (!state.isTestRunning) {
-            const status = document.getElementById('status-pill');
-            status.textContent = "Scanning...";
-            status.style.color = "#fbbf24";
-        }
-    }
+    document.getElementById('status-pill').textContent = "Video Loaded";
 }
 
 function renderLoop(now, metadata) {
     if (!state.video.paused) {
-        const videoTimeMs = metadata.mediaTime * 1000;
-        processSingleFrame(videoTimeMs);
+        processFrame(metadata.mediaTime * 1000);
         state.video.requestVideoFrameCallback(renderLoop);
     }
 }
 
-function calculatePhysics(wrist, time) {
+// --- NEW PROCESSING LOGIC ---
+function processFrame(timeMs) {
+    if (!state.isModelLoaded || !state.isVideoReady) return;
+
+    const result = state.landmarker.detectForVideo(state.video, timeMs);
+    state.ctx.clearRect(0, 0, state.canvas.width, state.canvas.height);
+    
+    if (result.landmarks && result.landmarks.length > 0) {
+        const pose = result.landmarks[0];
+        
+        // Extract Key Points
+        const wrist = pose[CONFIG.WRIST_ID];
+        const shoulder = pose[CONFIG.SHOULDER_ID];
+        const hip = pose[CONFIG.HIP_ID];
+
+        if (wrist && shoulder && hip) {
+            // Visualize Zones
+            drawZones(shoulder, hip);
+            drawDot(wrist);
+            
+            if (state.isTestRunning) {
+                runBiomechanicsEngine(wrist, shoulder, hip, timeMs);
+            }
+        }
+    }
+}
+
+function runBiomechanicsEngine(wrist, shoulder, hip, time) {
+    // 1. Calculate Velocity (Standard VBT Math)
     if (!state.prevWrist) {
         state.prevWrist = { x: wrist.x, y: wrist.y, time: time };
         return;
     }
 
     const dt = (time - state.prevWrist.time) / 1000;
-    
-    // Guard: Skip duplicate frames or huge jumps (rewinds)
-    if (dt <= 0.0001 || dt > 1.0) return;
+    if (dt <= 0.0001 || dt > 1.0) return; // Guard
 
+    // Convert normalized coords to pixels
     const dx = (wrist.x - state.prevWrist.x) * state.canvas.width;
     const dy = (wrist.y - state.prevWrist.y) * state.canvas.height;
     const distPx = Math.sqrt(dx*dx + dy*dy);
     
-    // Calibration: 2m width
-    const metersPerPixel = 2.0 / state.canvas.width; 
-    const velocity = (distPx * metersPerPixel) / dt;
+    // Calibration (Auto-scale: Assume distance from Shoulder to Hip is 0.5m)
+    // This is better than fixed width calibration as it scales with the subject
+    const bodySegmentPx = Math.abs(shoulder.y - hip.y) * state.canvas.height;
+    const pixelsPerMeter = bodySegmentPx / 0.5; // Approx 0.5m torso length
+    
+    const velocity = (distPx / pixelsPerMeter) / dt;
 
-    if (velocity > state.maxVelocity && velocity < 100) {
-        state.maxVelocity = velocity;
-        document.getElementById('val-velocity').textContent = state.maxVelocity.toFixed(2);
-        // document.getElementById('val-velocity').style.color = "red"; // Optional color pop
+    // Update Live View
+    document.getElementById('val-velocity').textContent = velocity.toFixed(2);
+    
+    // 2. STATE MACHINE (The "Snatch" Logic)
+    // Y-Coordinate: 0 is TOP, 1 is BOTTOM.
+    // So "Higher than shoulder" means wrist.y < shoulder.y
+    
+    const isBelowHip = wrist.y > hip.y;
+    const isAboveShoulder = wrist.y < shoulder.y;
+    
+    // STATE 1: WAITING IN THE HOLE (Backswing/Start)
+    if (state.phase === 'IDLE' || state.phase === 'LOCKOUT') {
+        if (isBelowHip) {
+            state.phase = 'BOTTOM';
+            document.getElementById('val-velocity').style.color = "#fbbf24"; // Yellow (Ready)
+        }
     }
     
+    // STATE 2: EXPLOSION (Concentric)
+    else if (state.phase === 'BOTTOM') {
+        // If we move UP past the hip, the rep has started
+        if (wrist.y < hip.y) {
+            state.phase = 'CONCENTRIC';
+            state.currentRepPeak = 0; // Reset peak for this new rep
+            document.getElementById('val-velocity').style.color = "#3b82f6"; // Blue (Go!)
+        }
+    }
+    
+    // STATE 3: TRACKING THE PEAK
+    else if (state.phase === 'CONCENTRIC') {
+        // Track Max Velocity during upward phase
+        if (velocity > state.currentRepPeak) {
+            state.currentRepPeak = velocity;
+        }
+        
+        // STATE 4: LOCKOUT (Finish)
+        // Must be above shoulder AND velocity must drop (pause overhead)
+        if (isAboveShoulder && velocity < 0.5) {
+            finishRep();
+        }
+        // Fail-safe: If they drop the bell back below hip without locking out
+        else if (isBelowHip) {
+            state.phase = 'BOTTOM'; // Reset without counting rep
+        }
+    }
+
     state.prevWrist = { x: wrist.x, y: wrist.y, time: time };
+}
+
+function finishRep() {
+    state.phase = 'LOCKOUT';
+    state.repCount++;
+    state.repHistory.push(state.currentRepPeak);
+    
+    // Update UI
+    document.getElementById('val-reps').textContent = state.repCount;
+    document.getElementById('val-peak').textContent = state.currentRepPeak.toFixed(2);
+    document.getElementById('val-velocity').style.color = "#10b981"; // Green (Good Rep)
+
+    // Calculate Drop-off
+    if (state.repCount <= 3) {
+        // Build Baseline
+        const sum = state.repHistory.reduce((a, b) => a + b, 0);
+        state.baseline = sum / state.repHistory.length;
+        document.getElementById('val-drop').textContent = "CALC...";
+    } else {
+        // Compare to Baseline
+        const drop = (state.baseline - state.currentRepPeak) / state.baseline;
+        const dropPct = (drop * 100).toFixed(1);
+        const dropEl = document.getElementById('val-drop');
+        dropEl.textContent = `-${dropPct}%`;
+        
+        if (drop * 100 >= CONFIG.DROP_FAIL) dropEl.style.color = "#ef4444";
+        else if (drop * 100 >= CONFIG.DROP_WARN) dropEl.style.color = "#fbbf24";
+        else dropEl.style.color = "#10b981";
+    }
+}
+
+// --- VISUALS ---
+function drawZones(shoulder, hip) {
+    const ctx = state.ctx;
+    const w = state.canvas.width;
+    const h = state.canvas.height;
+    
+    // Draw "Lockout Line" (Shoulder Height)
+    const shoulderY = shoulder.y * h;
+    ctx.strokeStyle = "rgba(16, 185, 129, 0.3)"; // Green Line
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(0, shoulderY);
+    ctx.lineTo(w, shoulderY);
+    ctx.stroke();
+    
+    // Draw "Start Line" (Hip Height)
+    const hipY = hip.y * h;
+    ctx.strokeStyle = "rgba(59, 130, 246, 0.3)"; // Blue Line
+    ctx.beginPath();
+    ctx.moveTo(0, hipY);
+    ctx.lineTo(w, hipY);
+    ctx.stroke();
 }
 
 function drawDot(wrist) {
     const x = wrist.x * state.canvas.width;
     const y = wrist.y * state.canvas.height;
-    state.ctx.fillStyle = "#ef4444";
+    state.ctx.fillStyle = state.phase === 'CONCENTRIC' ? "#3b82f6" : "#ef4444";
     state.ctx.beginPath();
     state.ctx.arc(x, y, 10, 0, 2*Math.PI);
     state.ctx.fill();
 }
 
-/**
- * CONTROLS & RESET LOGIC
- */
 function hardResetState() {
-    // 1. Reset Flags
     state.isTestRunning = false;
     state.prevWrist = null;
-    state.maxVelocity = 0;
+    state.repCount = 0;
+    state.phase = 'IDLE';
+    state.repHistory = [];
+    state.baseline = 0;
     
-    // 2. Clear Visuals
     state.ctx.clearRect(0, 0, state.canvas.width, state.canvas.height);
-    
-    // 3. Reset UI Elements
     document.getElementById('val-velocity').textContent = "0.00";
-    document.getElementById('val-velocity').style.color = "white"; // Reset color
+    document.getElementById('val-peak').textContent = "0.00";
+    document.getElementById('val-reps').textContent = "0";
+    document.getElementById('val-drop').textContent = "--";
     
-    document.getElementById('status-pill').textContent = "Ready";
-    document.getElementById('status-pill').style.color = "white"; // Reset color
-    
-    const startBtn = document.getElementById('btn-start-test');
-    const resetBtn = document.getElementById('btn-reset');
-    
-    startBtn.textContent = "▶ Start Test";
-    startBtn.disabled = false;
-    resetBtn.disabled = true;
+    document.getElementById('btn-start-test').textContent = "▶ Start Test";
+    document.getElementById('btn-start-test').disabled = false;
+    document.getElementById('btn-reset').disabled = true;
 }
 
 function setupControls() {
@@ -239,29 +294,22 @@ function setupControls() {
     const resetBtn = document.getElementById('btn-reset');
 
     startBtn.onclick = () => {
-        // Lock UI
         state.isTestRunning = true;
         startBtn.textContent = "Test Running...";
         startBtn.disabled = true;
         resetBtn.disabled = false;
         
-        // Reset Physics for this specific run
-        state.prevWrist = null;
-        state.maxVelocity = 0;
-        document.getElementById('val-velocity').textContent = "0.00";
+        state.phase = 'IDLE'; // Reset phase logic
+        state.repCount = 0;
+        state.repHistory = [];
         
-        // Play
         state.video.play();
         state.video.requestVideoFrameCallback(renderLoop);
     };
 
     resetBtn.onclick = () => {
         state.video.pause();
-        
-        // NUKE STATE
         hardResetState();
-        
-        // Rewind (Triggers 'seeked' -> processSingleFrame(0))
         state.video.currentTime = 0;
     };
 }
