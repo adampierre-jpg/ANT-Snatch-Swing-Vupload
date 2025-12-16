@@ -1,212 +1,213 @@
 :root {
-  --bg-primary: #0f172a;
-  --bg-secondary: #1e293b;
-  --text-primary: #f1f5f9;
-  --text-secondary: #e2e8f0;
+  --bg: #0f172a;
+  --card: #1e293b;
+  --primary: #3b82f6;
+  --success: #10b981;
+  --text: #f1f5f9;
   --text-muted: #94a3b8;
-  --text-subtle: #64748b;
-  --accent-primary: #3b82f6;
-  --accent-primary-hover: #2563eb;
-  --accent-secondary: #8b5cf6;
-  --accent-secondary-hover: #7c3aed;
-  --border-primary: #3b82f6;
-  --neutral: #475569;
-  --neutral-dark: #64748b;
-  --overlay-bg: rgba(15, 23, 42, 0.9);
-  --debug-bg: rgba(0, 0, 0, 0.85);
+  --border: #334155;
+  --danger: #ef4444;
 }
 
-* {
-  box-sizing: border-box;
-  margin: 0;
-  padding: 0;
-}
+* { box-sizing: border-box; }
 
 body {
-  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-  background: var(--bg-primary);
-  color: var(--text-primary);
-  min-height: 100vh;
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font-family: system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif;
+}
+
+.app-container {
+  max-width: 680px;
+  margin: 0 auto;
+  padding: 16px;
   display: flex;
   flex-direction: column;
+  gap: 16px;
+}
+
+.app-header {
+  display: flex;
   align-items: center;
-  padding: 1rem;
+  justify-content: space-between;
+  gap: 12px;
+  padding-bottom: 10px;
+  border-bottom: 1px solid var(--border);
 }
 
-h1 {
-  font-size: 1.5rem;
-  margin-bottom: 1rem;
-  color: var(--text-secondary);
+.app-header h1 {
+  margin: 0;
+  font-size: 1.15rem;
+  letter-spacing: 0.2px;
 }
 
-.video-container {
-  position: relative;
+.status-pill {
+  font-size: 0.82rem;
+  padding: 6px 10px;
+  border-radius: 999px;
+  background: var(--card);
+  border: 1px solid var(--border);
+  color: var(--primary);
+  white-space: nowrap;
+}
+
+.viewport-wrapper {
   width: 100%;
-  max-width: 640px;
-  aspect-ratio: 4/3;
-  background: var(--bg-secondary);
+  background: #000;
+  border: 2px solid var(--border);
   border-radius: 12px;
   overflow: hidden;
-  margin-bottom: 1rem;
 }
 
+.viewport-container {
+  position: relative;
+  width: 100%;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+}
+
+/* Video behind */
 #video {
   width: 100%;
-  height: 100%;
-  object-fit: contain;
+  height: auto;
+  display: block;
+  max-height: 75vh;
+  background: #000;
 }
 
+/* Canvas overlay on top of video (classic overlay approach) [web:126][web:128] */
 #canvas {
   position: absolute;
-  top: 0;
-  left: 0;
+  inset: 0;
   width: 100%;
   height: 100%;
+  z-index: 2;
   pointer-events: none;
 }
 
-#loading-overlay {
+/* Overlay while model loads */
+.overlay {
   position: absolute;
-  top: 0;
-  left: 0;
-  width: 100%;
-  height: 100%;
-  background: var(--overlay-bg);
+  inset: 0;
+  z-index: 10;
+  background: rgba(15, 23, 42, 0.92);
   display: flex;
+  flex-direction: column;
+  justify-content: center;
   align-items: center;
-  justify-content: center;
-  font-size: 1.2rem;
-  color: var(--text-muted);
+  gap: 10px;
 }
 
-#loading-overlay.hidden {
-  display: none;
+.spinner {
+  width: 34px;
+  height: 34px;
+  border: 3px solid var(--border);
+  border-top-color: var(--primary);
+  border-radius: 50%;
+  animation: spin 1s linear infinite;
 }
 
-.controls {
+@keyframes spin { to { transform: rotate(360deg); } }
+
+.dashboard {
   display: flex;
-  gap: 0.5rem;
-  margin-bottom: 1rem;
-  flex-wrap: wrap;
-  justify-content: center;
+  flex-direction: column;
+  gap: 14px;
 }
 
-button, .file-label {
-  background: var(--accent-primary);
-  color: white;
-  border: none;
-  padding: 0.75rem 1.5rem;
-  border-radius: 8px;
-  font-size: 1rem;
+.control-group label {
+  display: block;
+  margin-bottom: 8px;
+  font-size: 0.8rem;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
+}
+
+.btn-row {
+  display: flex;
+  gap: 10px;
+}
+
+.btn {
+  flex: 1;
+  padding: 12px 10px;
+  border-radius: 10px;
+  border: 1px solid transparent;
   cursor: pointer;
-  transition: background 0.2s;
+  font-weight: 700;
+  font-size: 0.95rem;
 }
 
-button:hover:not(:disabled), .file-label:hover {
-  background: var(--accent-primary-hover);
-}
-
-button:disabled {
-  background: var(--neutral);
+.btn:disabled {
+  opacity: 0.55;
   cursor: not-allowed;
 }
 
-#btn-reset {
-  background: var(--neutral-dark);
+.btn-primary {
+  background: var(--primary);
+  color: #fff;
 }
 
-#btn-reset:hover:not(:disabled) {
-  background: var(--neutral);
+.btn-secondary {
+  background: #475569;
+  color: #fff;
 }
 
-.file-label {
-  display: inline-block;
-  background: var(--accent-secondary);
+.btn-success {
+  background: var(--success);
+  color: #06251d;
 }
 
-.file-label:hover {
-  background: var(--accent-secondary-hover);
+.btn-outline {
+  background: transparent;
+  border-color: #475569;
+  color: var(--text-muted);
 }
 
+/* Hide file input but keep it accessible via button click */
 #file-input {
   display: none;
 }
 
-#status-pill {
-  display: inline-block;
-  padding: 0.5rem 1rem;
-  border: 2px solid var(--border-primary);
-  border-radius: 20px;
-  color: var(--border-primary);
-  font-weight: 600;
-  margin-bottom: 1rem;
-  text-align: center;
-  max-width: 100%;
-}
-
-.metrics {
+.metrics-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
-  gap: 1rem;
-  width: 100%;
-  max-width: 640px;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 10px;
 }
 
 .metric-card {
-  background: var(--bg-secondary);
+  background: var(--card);
+  border: 1px solid var(--border);
   border-radius: 12px;
-  padding: 1rem;
+  padding: 14px 10px;
   text-align: center;
 }
 
-.metric-label {
-  font-size: 0.75rem;
+.metric-card .label {
+  display: block;
+  font-size: 0.78rem;
   color: var(--text-muted);
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
-  margin-bottom: 0.5rem;
+  margin-bottom: 4px;
 }
 
-.metric-value {
-  font-size: 1.75rem;
-  font-weight: 700;
-  color: var(--text-primary);
+.metric-card .value {
+  display: block;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+  font-weight: 800;
+  font-size: 1.55rem;
+  line-height: 1.15;
 }
 
-.metric-unit {
-  font-size: 0.875rem;
-  color: var(--text-subtle);
-  margin-left: 0.25rem;
-}
-
-/* Debug info bar */
-#debug-bar {
-  position: fixed;
-  bottom: 0;
-  left: 0;
-  right: 0;
-  background: var(--debug-bg);
+.metric-card .unit {
+  display: block;
+  font-size: 0.74rem;
   color: var(--text-muted);
-  font-family: monospace;
-  font-size: 0.75rem;
-  padding: 0.5rem;
-  display: flex;
-  flex-wrap: wrap;
-  gap: 1rem;
-  justify-content: center;
+  margin-top: 2px;
 }
 
-#debug-bar span {
-  color: var(--text-primary);
-}
-
-/* Responsive */
-@media (max-width: 480px) {
-  .metrics {
-    grid-template-columns: repeat(2, 1fr);
-  }
-  
-  .metric-value {
-    font-size: 1.5rem;
-  }
+.metric-card.highlight .value {
+  color: var(--danger);
 }
