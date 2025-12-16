@@ -55,10 +55,16 @@ async function initializeApp() {
         document.getElementById('btn-camera').onclick = startCamera;
         document.getElementById('file-input').onchange = handleUpload;
         
-        // --- CRITICAL FIX: Event Listeners for Static Detection ---
-        // These run even when video is PAUSED
+        // --- EVENT LISTENERS ---
+        // 'loadeddata': Fires when video is ready to play
         state.video.addEventListener('loadeddata', onVideoReady);
-        state.video.addEventListener('seeked', () => processSingleFrame(state.video.currentTime * 1000));
+        // 'seeked': Fires when user scrubs or we rewind
+        state.video.addEventListener('seeked', () => {
+            // Only process if video is ready (avoids error on empty source)
+            if (state.isVideoReady) {
+                processSingleFrame(state.video.currentTime * 1000);
+            }
+        });
         
         setupControls();
 
@@ -68,14 +74,24 @@ async function initializeApp() {
     }
 }
 
+/**
+ * SOURCE HANDLING
+ */
 function handleUpload(e) {
     const file = e.target.files[0];
     if (!file) return;
     
     console.log("📂 File Selected");
-    state.isVideoReady = false; 
-    document.getElementById('status-pill').textContent = "Loading...";
     
+    // 1. NUKE OLD STATE
+    hardResetState();
+    
+    // 2. Set Loading UI
+    state.isVideoReady = false; 
+    document.getElementById('status-pill').textContent = "Loading Video...";
+    document.getElementById('btn-start-test').disabled = true;
+    
+    // 3. Load New Source
     const url = URL.createObjectURL(file);
     state.video.src = url;
     state.video.load(); 
@@ -84,6 +100,7 @@ function handleUpload(e) {
 async function startCamera() {
     try {
         const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'user' } });
+        hardResetState();
         state.video.srcObject = stream;
         state.video.src = "";
     } catch (e) {
@@ -95,25 +112,27 @@ function onVideoReady() {
     console.log("✅ Video Loaded");
     state.isVideoReady = true;
     
-    // Resize canvas to match video
+    // Resize canvas
     state.canvas.width = state.video.videoWidth;
     state.canvas.height = state.video.videoHeight;
     
-    // CRITICAL FIX: Force an immediate scan of the first frame
-    // We don't wait for "play" to happen.
+    // Force immediate scan of frame 0
     processSingleFrame(0); 
     
     document.getElementById('btn-start-test').disabled = false;
+    document.getElementById('status-pill').textContent = "Ready to Test";
 }
 
-// --- NEW FUNCTION: Processes one frame (used by Loop AND Events) ---
+/**
+ * CORE LOGIC
+ */
 function processSingleFrame(timeMs) {
     if (!state.isModelLoaded || !state.isVideoReady) return;
 
     // Detect
     const result = state.landmarker.detectForVideo(state.video, timeMs);
     
-    // Clear & Draw
+    // Clear Canvas
     state.ctx.clearRect(0, 0, state.canvas.width, state.canvas.height);
     
     if (result.landmarks && result.landmarks.length > 0) {
@@ -121,28 +140,28 @@ function processSingleFrame(timeMs) {
         if (wrist) {
             drawDot(wrist);
             
-            // Update UI Status
+            // Update UI Status if not running
             const status = document.getElementById('status-pill');
-            if(status.textContent !== "Test Running...") {
+            if (!state.isTestRunning) {
                 status.textContent = "Wrist Found ✓";
                 status.style.color = "#10b981";
             }
 
-            // Only calculate physics if the TEST is actually running
+            // Physics (Only if Test Running)
             if (state.isTestRunning) {
                 calculatePhysics(wrist, timeMs);
             }
         }
     } else {
-        // Only show "Scanning" if we aren't mid-test (avoids flickering)
+        // Show scanning if idle
         if (!state.isTestRunning) {
-            document.getElementById('status-pill').textContent = "Scanning...";
-            document.getElementById('status-pill').style.color = "#fbbf24";
+            const status = document.getElementById('status-pill');
+            status.textContent = "Scanning...";
+            status.style.color = "#fbbf24";
         }
     }
 }
 
-// --- THE PHYSICS LOOP (Only runs during playback) ---
 function renderLoop(now, metadata) {
     if (!state.video.paused) {
         const videoTimeMs = metadata.mediaTime * 1000;
@@ -158,7 +177,9 @@ function calculatePhysics(wrist, time) {
     }
 
     const dt = (time - state.prevWrist.time) / 1000;
-    if (dt <= 0.0001 || dt > 1.0) return; // Skip bad frames
+    
+    // Guard: Skip duplicate frames or huge jumps (rewinds)
+    if (dt <= 0.0001 || dt > 1.0) return;
 
     const dx = (wrist.x - state.prevWrist.x) * state.canvas.width;
     const dy = (wrist.y - state.prevWrist.y) * state.canvas.height;
@@ -171,7 +192,7 @@ function calculatePhysics(wrist, time) {
     if (velocity > state.maxVelocity && velocity < 100) {
         state.maxVelocity = velocity;
         document.getElementById('val-velocity').textContent = state.maxVelocity.toFixed(2);
-        document.getElementById('val-velocity').style.color = "red";
+        // document.getElementById('val-velocity').style.color = "red"; // Optional color pop
     }
     
     state.prevWrist = { x: wrist.x, y: wrist.y, time: time };
@@ -186,56 +207,63 @@ function drawDot(wrist) {
     state.ctx.fill();
 }
 
+/**
+ * CONTROLS & RESET LOGIC
+ */
+function hardResetState() {
+    // 1. Reset Flags
+    state.isTestRunning = false;
+    state.prevWrist = null;
+    state.maxVelocity = 0;
+    
+    // 2. Clear Visuals
+    state.ctx.clearRect(0, 0, state.canvas.width, state.canvas.height);
+    
+    // 3. Reset UI Elements
+    document.getElementById('val-velocity').textContent = "0.00";
+    document.getElementById('val-velocity').style.color = "white"; // Reset color
+    
+    document.getElementById('status-pill').textContent = "Ready";
+    document.getElementById('status-pill').style.color = "white"; // Reset color
+    
+    const startBtn = document.getElementById('btn-start-test');
+    const resetBtn = document.getElementById('btn-reset');
+    
+    startBtn.textContent = "▶ Start Test";
+    startBtn.disabled = false;
+    resetBtn.disabled = true;
+}
+
 function setupControls() {
     const startBtn = document.getElementById('btn-start-test');
     const resetBtn = document.getElementById('btn-reset');
-    const velocityDisplay = document.getElementById('val-velocity');
-    const statusPill = document.getElementById('status-pill');
 
     startBtn.onclick = () => {
-        // 1. Lock UI
+        // Lock UI
         state.isTestRunning = true;
         startBtn.textContent = "Test Running...";
         startBtn.disabled = true;
         resetBtn.disabled = false;
         
-        // 2. Reset Physics Engine for new run
+        // Reset Physics for this specific run
         state.prevWrist = null;
         state.maxVelocity = 0;
-        velocityDisplay.textContent = "0.00";
-        velocityDisplay.style.color = "black";
+        document.getElementById('val-velocity').textContent = "0.00";
         
-        // 3. Start Video & Loop
+        // Play
         state.video.play();
         state.video.requestVideoFrameCallback(renderLoop);
     };
 
     resetBtn.onclick = () => {
-        // 1. Stop Everything
-        state.isTestRunning = false;
         state.video.pause();
         
-        // 2. Clear Visuals Immediately
-        state.ctx.clearRect(0, 0, state.canvas.width, state.canvas.height);
-        velocityDisplay.textContent = "0.00";
-        velocityDisplay.style.color = "black";
+        // NUKE STATE
+        hardResetState();
         
-        // 3. Reset UI State
-        startBtn.textContent = "▶ Start Test";
-        startBtn.disabled = false;
-        resetBtn.disabled = true;
-        
-        // 4. Reset Status Pill
-        // We set it to scanning temporarily until the seek finishes and finds the wrist again
-        statusPill.textContent = "Scanning..."; 
-        statusPill.style.color = "#fbbf24";
-
-        // 5. Rewind
-        // This triggers the 'seeked' event listener we added earlier,
-        // which will automatically run processSingleFrame(0) and find the wrist at the start.
+        // Rewind (Triggers 'seeked' -> processSingleFrame(0))
         state.video.currentTime = 0;
     };
 }
-
 
 initializeApp();
