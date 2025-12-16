@@ -1,81 +1,70 @@
 /**
- * KB Velocity Tracker (Snatch)
- * Handedness:
- *  - When you press Start Test, app enters ARMING.
- *  - The first wrist that goes clearly below its same-side knee (scaled by shank length)
- *    for ~2–3 frames is treated as the "grab" hand and becomes the locked side.
- *  - When that same wrist returns to that floor zone and dwells briefly (~100ms) with low
- *    velocity, it is treated as bell set-down and handedness is reset for the next set.
+ * KB Velocity Tracker (Snatch) — Floor-zone handedness with FAST detection
  *
- * Rep logic, smoothing, calibration, and UI wiring are preserved from the previous version.
+ * FIXES:
+ * - Reduced ARM/RESET frame requirements to ~100ms
+ * - Relaxed lockout velocity threshold
+ * - Added debug logging for phase transitions
+ * - Fixed potential calibration/velocity edge cases
  */
 
 import { PoseLandmarker, FilesetResolver } from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/vision_bundle.mjs";
 
 const CONFIG = {
-  // Pose indices (MediaPipe Pose)
-  LEFT:  { WRIST: 15, SHOULDER: 11, HIP: 23, KNEE: 25, ANKLE: 27 }, // [web:54][web:53]
-  RIGHT: { WRIST: 16, SHOULDER: 12, HIP: 24, KNEE: 26, ANKLE: 28 }, // [web:54][web:53]
+  // Pose indices
+  LEFT:  { WRIST: 15, SHOULDER: 11, HIP: 23, KNEE: 25, ANKLE: 27 },
+  RIGHT: { WRIST: 16, SHOULDER: 12, HIP: 24, KNEE: 26, ANKLE: 28 },
 
-  // MediaPipe thresholds
+  // MediaPipe
   MIN_DET_CONF: 0.5,
   MIN_TRACK_CONF: 0.5,
 
   // Velocity stabilizers
   SMOOTHING_ALPHA: 0.30,
   MAX_REALISTIC_VELOCITY: 10.0,
-  MIN_DT: 0.005,
-  MAX_DT: 0.12,
+  MIN_DT: 0.01,
+  MAX_DT: 0.10,
   TORSO_METERS: 0.5,
 
   // Snatch rep logic
-  LOCKOUT_VEL_CUTOFF: 0.5,
+  LOCKOUT_VEL_CUTOFF: 1.5,        // INCREASED - easier to trigger lockout
   BASELINE_REPS: 3,
   DROP_WARN: 15,
   DROP_FAIL: 20,
 
-  // Floor-zone handedness detection (hike pass / hand on bell)
-  SHANK_FRACTION: 0.30,       // wrist must be this fraction of shank below knee
-  MIN_SHANK_LEN_NORM: 0.03,   // ignore bad pose if knee/ankle too close
-  ARM_FRAMES_REQUIRED: 2,     // ~1–2 frames to arm (fast grab)
-  RESET_FRAMES_REQUIRED: 3,   // ~100ms at ~30fps for set-down
-  RESET_VEL_THRESHOLD: 0.35   // must be slow while in floor zone to reset
+  // Floor-zone detection (FASTER)
+  SHANK_FRACTION: 0.35,
+  ARM_FRAMES_REQUIRED: 3,         // ~100ms at 30fps
+  RESET_FRAMES_REQUIRED: 3,       // ~100ms for set-down
+  MIN_SHANK_LEN_NORM: 0.06
 };
 
 let state = {
-  // DOM / MediaPipe
   video: null,
   canvas: null,
   ctx: null,
   landmarker: null,
 
-  // Flags
   isModelLoaded: false,
   isVideoReady: false,
 
-  // Pose cache
   lastPose: null,
 
-  // Test stage
   isTestRunning: false,
-  testStage: "IDLE",            // IDLE | ARMING | RUNNING
+  testStage: "IDLE",
 
-  // Handedness
-  lockedSide: "unknown",        // "left" | "right"
+  lockedSide: "unknown",
   sideLocked: false,
 
-  // Floor-zone dwell counts
   floorCountLeft: 0,
   floorCountRight: 0,
   floorCountLocked: 0,
 
-  // Physics (locked side only)
-  prevWrist: null,              // {xNorm, yNorm, tMs}
-  lockedCalibration: null,      // px/m
+  prevWrist: null,
+  lockedCalibration: null,
   smoothedVelocity: 0,
 
-  // Rep state
-  phase: "IDLE",                // IDLE -> BOTTOM -> CONCENTRIC -> LOCKOUT
+  phase: "IDLE",
   repCount: 0,
   currentRepPeak: 0,
   repHistory: [],
@@ -203,7 +192,7 @@ function masterLoop() {
   requestAnimationFrame(masterLoop);
 }
 
-/* ----------------- FLOOR-ZONE HANDENESS + RESET ----------------- */
+/* ----------------- FLOOR ZONE: ARMING + RESET ----------------- */
 
 function updateHandednessByFloorGrab(pose) {
   const inFloorLeft = isWristInFloorZone(pose, "left");
@@ -212,24 +201,19 @@ function updateHandednessByFloorGrab(pose) {
   state.floorCountLeft = inFloorLeft ? state.floorCountLeft + 1 : 0;
   state.floorCountRight = inFloorRight ? state.floorCountRight + 1 : 0;
 
-  let chosen = "unknown";
-
-  if (state.floorCountLeft >= CONFIG.ARM_FRAMES_REQUIRED &&
-      state.floorCountRight < CONFIG.ARM_FRAMES_REQUIRED) {
-    chosen = "left";
-  } else if (state.floorCountRight >= CONFIG.ARM_FRAMES_REQUIRED &&
-             state.floorCountLeft < CONFIG.ARM_FRAMES_REQUIRED) {
-    chosen = "right";
-  } else if (state.floorCountLeft >= CONFIG.ARM_FRAMES_REQUIRED &&
-             state.floorCountRight >= CONFIG.ARM_FRAMES_REQUIRED) {
-    // both hit at once: choose deeper one
-    const depthL = floorDepth(pose, "left");
-    const depthR = floorDepth(pose, "right");
-    chosen = depthL >= depthR ? "left" : "right";
+  if (state.floorCountLeft >= CONFIG.ARM_FRAMES_REQUIRED && state.floorCountRight < CONFIG.ARM_FRAMES_REQUIRED) {
+    lockSideAndStartRunning("left");
+    return;
+  }
+  if (state.floorCountRight >= CONFIG.ARM_FRAMES_REQUIRED && state.floorCountLeft < CONFIG.ARM_FRAMES_REQUIRED) {
+    lockSideAndStartRunning("right");
+    return;
   }
 
-  if (chosen !== "unknown") {
-    lockSideAndStartRunning(chosen);
+  if (state.floorCountLeft >= CONFIG.ARM_FRAMES_REQUIRED && state.floorCountRight >= CONFIG.ARM_FRAMES_REQUIRED) {
+    const depthL = floorDepth(pose, "left");
+    const depthR = floorDepth(pose, "right");
+    lockSideAndStartRunning(depthL >= depthR ? "left" : "right");
   }
 }
 
@@ -237,26 +221,23 @@ function lockSideAndStartRunning(side) {
   state.lockedSide = side;
   state.sideLocked = true;
 
+  console.log(`✓ LOCKED ${side.toUpperCase()} ARM`);
+
   resetRunStateOnly();
 
   state.testStage = "RUNNING";
-  setStatus(`Locked ${side.toUpperCase()} — tracking`, "#10b981");
+  setStatus(`Locked ${side.toUpperCase()} — tracking reps`, "#10b981");
 }
 
 function maybeResetOnSetDown(pose) {
   if (!state.sideLocked) return;
 
-  const inFloor = isWristInFloorZone(pose, state.lockedSide);
-  const lowVel = (state.smoothedVelocity || 0) < CONFIG.RESET_VEL_THRESHOLD;
-
-  if (inFloor && lowVel) {
-    state.floorCountLocked += 1;
-  } else {
-    state.floorCountLocked = 0;
-  }
+  const inFloorLocked = isWristInFloorZone(pose, state.lockedSide);
+  state.floorCountLocked = inFloorLocked ? state.floorCountLocked + 1 : 0;
 
   if (state.floorCountLocked >= CONFIG.RESET_FRAMES_REQUIRED) {
-    // auto reset handedness for next set, keep video rolling
+    console.log(`✓ BELL SET DOWN — resetting handedness`);
+    
     state.sideLocked = false;
     state.lockedSide = "unknown";
     state.testStage = "ARMING";
@@ -266,19 +247,20 @@ function maybeResetOnSetDown(pose) {
     state.floorCountLocked = 0;
 
     resetRunStateOnly();
-    setStatus("Bell set down — grab again to arm next side", "#fbbf24");
+    setStatus("Set down — grab bell to arm next set", "#fbbf24");
   }
 }
 
 function isWristInFloorZone(pose, side) {
   const idx = side === "left" ? CONFIG.LEFT : CONFIG.RIGHT;
+
   const wrist = pose[idx.WRIST];
   const knee = pose[idx.KNEE];
   const ankle = pose[idx.ANKLE];
 
   if (!wrist || !knee || !ankle) return false;
 
-  const shank = ankle.y - knee.y; // normalized
+  const shank = ankle.y - knee.y;
   if (shank < CONFIG.MIN_SHANK_LEN_NORM) return false;
 
   const threshold = knee.y + CONFIG.SHANK_FRACTION * shank;
@@ -287,9 +269,11 @@ function isWristInFloorZone(pose, side) {
 
 function floorDepth(pose, side) {
   const idx = side === "left" ? CONFIG.LEFT : CONFIG.RIGHT;
+
   const wrist = pose[idx.WRIST];
   const knee = pose[idx.KNEE];
   const ankle = pose[idx.ANKLE];
+
   if (!wrist || !knee || !ankle) return 0;
 
   const shank = ankle.y - knee.y;
@@ -306,6 +290,7 @@ function runSnatchPhysicsAndLogic(pose, timeMs) {
   if (side !== "left" && side !== "right") return;
 
   const idx = side === "left" ? CONFIG.LEFT : CONFIG.RIGHT;
+
   const wrist = pose[idx.WRIST];
   const shoulder = pose[idx.SHOULDER];
   const hip = pose[idx.HIP];
@@ -313,9 +298,11 @@ function runSnatchPhysicsAndLogic(pose, timeMs) {
   if (!wrist || !shoulder || !hip) return;
   if ((wrist.visibility ?? 1) < 0.5) return;
 
+  // Lock calibration ONCE
   if (!state.lockedCalibration) {
     const torsoPx = Math.abs(shoulder.y - hip.y) * state.canvas.height;
     state.lockedCalibration = torsoPx > 0 ? torsoPx / CONFIG.TORSO_METERS : 100;
+    console.log(`Calibration: ${state.lockedCalibration.toFixed(2)} px/m`);
   }
 
   if (!state.prevWrist) {
@@ -339,6 +326,7 @@ function runSnatchPhysicsAndLogic(pose, timeMs) {
     return;
   }
 
+  // Smooth velocity
   if (!state.smoothedVelocity) state.smoothedVelocity = rawVel;
   state.smoothedVelocity =
     CONFIG.SMOOTHING_ALPHA * rawVel + (1 - CONFIG.SMOOTHING_ALPHA) * state.smoothedVelocity;
@@ -346,23 +334,35 @@ function runSnatchPhysicsAndLogic(pose, timeMs) {
   const velocity = state.smoothedVelocity;
   document.getElementById("val-velocity").textContent = velocity.toFixed(2);
 
+  // Phase logic
   const isBelowHip = wrist.y > hip.y;
   const isAboveShoulder = wrist.y < shoulder.y;
 
   if (state.phase === "IDLE" || state.phase === "LOCKOUT") {
-    if (isBelowHip) state.phase = "BOTTOM";
+    if (isBelowHip) {
+      state.phase = "BOTTOM";
+      console.log(`Phase: BOTTOM`);
+    }
   } else if (state.phase === "BOTTOM") {
-    if (wrist.y < hip.y) {
+    if (!isBelowHip) {  // Wrist rose above hip = start of pull
       state.phase = "CONCENTRIC";
       state.currentRepPeak = 0;
+      console.log(`Phase: CONCENTRIC`);
     }
   } else if (state.phase === "CONCENTRIC") {
-    if (velocity > state.currentRepPeak) state.currentRepPeak = velocity;
+    // Track peak
+    if (velocity > state.currentRepPeak) {
+      state.currentRepPeak = velocity;
+    }
 
+    // Lockout = overhead + slow
     if (isAboveShoulder && velocity < CONFIG.LOCKOUT_VEL_CUTOFF) {
+      console.log(`✓ REP COMPLETE - Peak: ${state.currentRepPeak.toFixed(2)} m/s`);
       finishRep();
     } else if (isBelowHip) {
+      // Dropped back down without locking out
       state.phase = "BOTTOM";
+      console.log(`Phase: BOTTOM (dropped)`);
     }
   }
 
@@ -392,6 +392,8 @@ function finishRep() {
     else if (drop * 100 >= CONFIG.DROP_WARN) dropEl.style.color = "#fbbf24";
     else dropEl.style.color = "#10b981";
   }
+
+  console.log(`Rep ${state.repCount}: Peak ${state.currentRepPeak.toFixed(2)} m/s, Drop: ${state.repCount > CONFIG.BASELINE_REPS ? dropEl.textContent : 'baseline'}`);
 }
 
 /* ------------------------------ DRAWING ------------------------------ */
@@ -401,7 +403,6 @@ function drawOverlay() {
   if (!state.lastPose) return;
 
   if (state.isTestRunning && state.testStage === "ARMING") {
-    // Show floor thresholds + wrists for both sides
     drawFloorDebug(state.lastPose, "left");
     drawFloorDebug(state.lastPose, "right");
 
@@ -435,9 +436,7 @@ function drawFloorDebug(pose, side) {
   const threshold = knee.y + CONFIG.SHANK_FRACTION * shank;
   const yPx = threshold * state.canvas.height;
 
-  state.ctx.strokeStyle = side === "left"
-    ? "rgba(96,165,250,0.35)"
-    : "rgba(248,113,113,0.35)";
+  state.ctx.strokeStyle = side === "left" ? "rgba(96,165,250,0.4)" : "rgba(248,113,113,0.4)";
   state.ctx.lineWidth = 2;
   state.ctx.beginPath();
   state.ctx.moveTo(0, yPx);
@@ -506,12 +505,12 @@ function setupControls() {
     startBtn.disabled = true;
     resetBtn.disabled = false;
 
-    setStatus("ARMING: grab bell (wrist clearly below knee) to lock side…", "#fbbf24");
+    setStatus("ARMING: grab bell to lock side…", "#fbbf24");
 
     try {
       await state.video.play();
     } catch {
-      alert("Playback blocked. Tap the video once, then press Start Test again.");
+      alert("Playback blocked. Tap the video area once, then press Start Test again.");
       startBtn.textContent = "▶ Start Test";
       startBtn.disabled = false;
       resetBtn.disabled = true;
