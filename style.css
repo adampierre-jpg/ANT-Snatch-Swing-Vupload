@@ -1,252 +1,178 @@
-/* --- RESET & BASICS --- */
 :root {
-    --primary: #3b82f6;      /* Blue-500 */
-    --primary-hover: #2563eb;
-    --bg-dark: #0f172a;      /* Slate-900 */
-    --bg-card: #1e293b;      /* Slate-800 */
-    --text-main: #f8fafc;
+    --bg: #0f172a;
+    --card: #1e293b;
+    --primary: #3b82f6;
+    --success: #10b981;
+    --text: #f1f5f9;
     --text-muted: #94a3b8;
-    --accent-red: #ef4444;
+    --accent: #ef4444;
 }
 
-* { box-sizing: border-box; }
+* { box-sizing: border-box; touch-action: manipulation; }
 
 body {
-    background-color: var(--bg-dark);
-    color: var(--text-main);
-    font-family: system-ui, -apple-system, sans-serif;
+    background-color: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, system-ui, sans-serif;
     margin: 0;
     padding: 0;
-    min-height: 100vh;
-    display: flex;
-    justify-content: center;
+    /* Prevent pull-to-refresh on mobile */
+    overscroll-behavior: none;
 }
 
 .app-container {
-    width: 100%;
-    max-width: 800px;
-    padding: 20px;
+    max-width: 600px;
+    margin: 0 auto;
+    padding: 15px;
     display: flex;
     flex-direction: column;
     gap: 20px;
 }
 
-/* --- HEADER --- */
+/* HEADER */
 .app-header {
     display: flex;
     justify-content: space-between;
     align-items: center;
+    padding-bottom: 10px;
     border-bottom: 1px solid #334155;
-    padding-bottom: 15px;
 }
 
-.app-header h1 {
-    margin: 0;
-    font-size: 1.5rem;
-    font-weight: 700;
-}
+.app-header h1 { font-size: 1.25rem; margin: 0; }
 
 .status-pill {
-    background: #1e293b;
-    padding: 6px 12px;
-    border-radius: 20px;
-    font-size: 0.85rem;
+    font-size: 0.8rem;
+    padding: 4px 10px;
+    background: var(--card);
+    border-radius: 12px;
     color: var(--primary);
     border: 1px solid #334155;
 }
 
-/* --- VIDEO VIEWPORT (CRITICAL FOR LAYOUT) --- */
+/* VIDEO CONTAINER (DYNAMIC SIZING) */
 .viewport-wrapper {
     width: 100%;
-    display: flex;
-    justify-content: center;
+    background: #000;
+    border-radius: 12px;
+    overflow: hidden;
+    border: 2px solid #334155;
+    position: relative;
+    /* Min height to avoid collapse */
+    min-height: 250px; 
 }
 
 .viewport-container {
     position: relative;
     width: 100%;
-    aspect-ratio: 4/3; /* Fixed aspect ratio to prevent layout shifts */
-    background: #000;
-    border-radius: 12px;
-    overflow: hidden;
-    border: 2px solid #334155;
-    box-shadow: 0 10px 30px rgba(0,0,0,0.3);
-}
-
-/* Stack Video and Canvas perfectly */
-video, canvas {
-    position: absolute;
-    top: 0;
-    left: 0;
-    width: 100%;
-    height: 100%;
-    object-fit: contain;
-}
-
-/* CRITICAL: Allows clicks to pass through canvas to controls if needed, 
-   but since we use custom controls on top, this is just a safeguard */
-canvas {
-    pointer-events: none;
-    z-index: 2;
+    height: auto;
+    display: flex;
+    justify-content: center;
+    align-items: center;
 }
 
 video {
+    display: block;
+    width: 100%;
+    height: auto;
+    max-height: 75vh; /* Prevent overly tall vertical videos */
     z-index: 1;
 }
 
-/* --- CUSTOM VIDEO CONTROLS --- */
+canvas {
+    position: absolute;
+    top: 0; left: 0;
+    width: 100%; height: 100%;
+    pointer-events: none; /* Click-through */
+    z-index: 2;
+}
+
+/* CONTROLS OVERLAY */
 .video-controls {
     position: absolute;
-    bottom: 0;
-    left: 0;
-    width: 100%;
+    bottom: 0; left: 0; right: 0;
     background: rgba(15, 23, 42, 0.9);
-    backdrop-filter: blur(4px);
-    padding: 12px;
+    padding: 10px;
     display: flex;
     align-items: center;
-    gap: 15px;
-    z-index: 10; /* Highest layer = Clickable */
+    gap: 10px;
+    z-index: 10;
 }
 
 .control-btn {
-    background: none;
-    border: none;
-    color: white;
-    font-size: 1.2rem;
+    background: none; border: none;
+    color: white; font-size: 1.5rem;
+    padding: 5px 10px;
     cursor: pointer;
-    padding: 0;
-    width: 30px;
-    height: 30px;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    transition: color 0.2s;
 }
 
-.control-btn:hover { color: var(--primary); }
+#seek-bar { flex: 1; height: 5px; cursor: pointer; }
+#time-display { font-variant-numeric: tabular-nums; font-size: 0.9rem; min-width: 40px; }
 
-#seek-bar {
-    flex-grow: 1;
-    cursor: pointer;
-    height: 4px;
-    accent-color: var(--primary);
-}
+/* DASHBOARD CONTROLS */
+.dashboard { display: flex; flex-direction: column; gap: 20px; }
 
-#time-display {
+.control-group label {
+    display: block;
+    font-size: 0.85rem;
     color: var(--text-muted);
-    font-size: 0.9rem;
-    font-variant-numeric: tabular-nums;
-    min-width: 40px;
-    text-align: right;
+    margin-bottom: 8px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
 }
 
-/* --- CONTROLS & METRICS DASHBOARD --- */
-.dashboard-section {
-    display: flex;
-    flex-direction: column;
-    gap: 20px;
-}
+.btn-row { display: flex; gap: 10px; }
 
-.controls-group {
-    display: flex;
+.btn {
+    flex: 1;
+    padding: 12px;
+    border-radius: 8px;
+    border: none;
+    font-weight: 600;
+    font-size: 0.95rem;
+    cursor: pointer;
+    transition: opacity 0.2s;
+}
+.btn:disabled { opacity: 0.5; cursor: not-allowed; }
+.btn-primary { background: var(--primary); color: white; }
+.btn-secondary { background: #475569; color: white; }
+.btn-success { background: var(--success); color: white; }
+.btn-outline { background: transparent; border: 1px solid #475569; color: var(--text-muted); }
+
+/* METRICS GRID */
+.metrics-grid {
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
     gap: 10px;
 }
 
-.btn {
-    padding: 12px 24px;
-    border-radius: 8px;
-    border: none;
-    cursor: pointer;
-    font-weight: 600;
-    font-size: 0.95rem;
-    transition: transform 0.1s, opacity 0.2s;
-    flex: 1;
-}
-
-.btn:active { transform: scale(0.98); }
-
-.btn-primary { background: var(--primary); color: white; }
-.btn-primary:hover { background: var(--primary-hover); }
-
-.btn-secondary { background: #334155; color: white; }
-.btn-secondary:hover { background: #475569; }
-
-/* Metrics Grid */
-.metrics-grid {
-    display: grid;
-    grid-template-columns: repeat(4, 1fr);
-    gap: 12px;
-}
-
 .metric-card {
-    background: var(--bg-card);
-    padding: 16px 10px;
-    border-radius: 10px;
+    background: var(--card);
+    padding: 15px;
+    border-radius: 8px;
     text-align: center;
     border: 1px solid #334155;
-    display: flex;
-    flex-direction: column;
-    justify-content: center;
 }
 
-.metric-card .label {
-    font-size: 0.75rem;
-    color: var(--text-muted);
-    text-transform: uppercase;
-    letter-spacing: 0.5px;
-    margin-bottom: 4px;
-}
+.metric-card .label { display: block; font-size: 0.75rem; color: var(--text-muted); margin-bottom: 5px; }
+.metric-card .value { font-size: 1.5rem; font-weight: 700; font-family: monospace; }
+.metric-card .unit { font-size: 0.7rem; color: var(--text-muted); }
+.highlight .value { color: var(--accent); }
 
-.metric-card .value {
-    font-size: 1.5rem;
-    font-weight: 700;
-    color: var(--text-main);
-    font-family: monospace; /* Prevents layout jitter */
-}
-
-.metric-card .unit {
-    font-size: 0.7rem;
-    color: var(--text-muted);
-}
-
-.highlight-card .value { color: var(--accent-red); }
-
-/* --- UTILITIES --- */
-.hidden { display: none !important; }
-
+/* LOADING */
 .overlay {
-    position: absolute;
-    top: 0; left: 0; width: 100%; height: 100%;
+    position: absolute; top: 0; left: 0; right: 0; bottom: 0;
     background: rgba(15, 23, 42, 0.95);
     z-index: 20;
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    justify-content: center;
+    display: flex; flex-direction: column;
+    align-items: center; justify-content: center;
 }
-
+.hidden { display: none !important; }
 .spinner {
-    width: 40px;
-    height: 40px;
-    border: 4px solid #334155;
+    width: 30px; height: 30px;
+    border: 3px solid #334155;
     border-top-color: var(--primary);
     border-radius: 50%;
     animation: spin 1s linear infinite;
-    margin-bottom: 15px;
+    margin-bottom: 10px;
 }
-
 @keyframes spin { to { transform: rotate(360deg); } }
-
-/* Mobile Optimization */
-@media (max-width: 600px) {
-    .metrics-grid {
-        grid-template-columns: repeat(2, 1fr);
-    }
-    
-    .app-header h1 {
-        font-size: 1.2rem;
-    }
-}
-
-
