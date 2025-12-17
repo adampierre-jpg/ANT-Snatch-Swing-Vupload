@@ -268,38 +268,21 @@ function checkStartCondition(pose, timeMs) {
   const rY = rWrist.y;
   const activeSide = lY > rY ? "left" : "right";
   
-  // ✅ UPDATE TRACKING SIDE (so runPhysics tracks the lower hand)
+  // Update tracking side
   state.activeTrackingSide = activeSide;
   
-  const sideIdx = activeSide === "left" ? CONFIG.LEFT : CONFIG.RIGHT;
-  const wrist = pose[sideIdx.WRIST];
-  const head = pose[CONFIG.HEAD_LANDMARK];
-  if (!wrist || !head) return;
-  
   const inZone = isWristInFloorZone(pose, activeSide);
-  const headLowering = head.y > state.prevHeadY + CONFIG.HEAD_DIP_THRESHOLD;
-  const hikingDown = state.lastVy > CONFIG.HIKE_VY_THRESHOLD && state.lastSpeed > CONFIG.HIKE_SPEED_THRESHOLD;
+  const hikingDown = state.lastVy > 0.3 && state.lastSpeed > 0.5;
   
   // ✅ DEBUG LOG
   if (CONFIG.DEBUG_MODE && inZone) {
-    console.log(`[START CHECK] Side:${activeSide} | Zone:${inZone} | HeadDip:${headLowering} | Hike:${hikingDown} | Vy:${state.lastVy.toFixed(2)} | Speed:${state.lastSpeed.toFixed(2)}`);
+    console.log(`[START] Side:${activeSide} | Zone:${inZone} | Hike:${hikingDown} | Vy:${state.lastVy.toFixed(2)} | Speed:${state.lastSpeed.toFixed(2)}`);
   }
   
-  state.prevHeadY = head.y;
-  
-  // Park confirm
-  if (inZone && headLowering) {
-    state.parkingConfirmed = true;
-    state.armingSide = activeSide;
-    if (CONFIG.DEBUG_MODE) console.log(`✅ PARKING CONFIRMED: ${activeSide}`);
-  }
-  
-  // Start trigger
-  if (state.parkingConfirmed && inZone && hikingDown) {
-    if (CONFIG.DEBUG_MODE) console.log(`🚀 STARTING SET: ${state.armingSide}`);
-    startNewSet(state.armingSide);
-    state.parkingConfirmed = false;
-    state.prevHeadY = 0;
+  // ✅ SIMPLE: Just zone + hike direction
+  if (inZone && hikingDown) {
+    console.log(`🚀 STARTING SET: ${activeSide}`);
+    startNewSet(activeSide);
   }
 }
 
@@ -312,34 +295,27 @@ function checkEndCondition(pose, timeMs) {
   
   const sideIdx = state.lockedSide === "left" ? CONFIG.LEFT : CONFIG.RIGHT;
   const wrist = pose[sideIdx.WRIST];
-  const head = pose[CONFIG.HEAD_LANDMARK];
-  if (!wrist || !head) return;
+  if (!wrist) return;
   
   const inZone = isWristInFloorZone(pose, state.lockedSide);
-  const headLowering = head.y > state.prevHeadY + CONFIG.HEAD_DIP_THRESHOLD;
-  const standingUp = state.lastVy < -0.3 && state.lastSpeed > 0.4;
+  const standingUp = state.lastVy < -0.3 && state.lastSpeed > 0.5;
   
   // ✅ DEBUG LOG
   if (CONFIG.DEBUG_MODE && inZone) {
-    console.log(`[END CHECK] Zone:${inZone} | HeadDip:${headLowering} | StandUp:${standingUp} | Vy:${state.lastVy.toFixed(2)}`);
+    console.log(`[END] Zone:${inZone} | StandUp:${standingUp} | Vy:${state.lastVy.toFixed(2)} | Speed:${state.lastSpeed.toFixed(2)}`);
   }
   
-  state.prevHeadY = head.y;
-  
-  // Park confirm
-  if (inZone && headLowering) {
-    state.parkingConfirmed = true;
-    if (CONFIG.DEBUG_MODE) console.log(`✅ PARKING CONFIRMED (END)`);
-  }
-  
-  // End trigger
-  if (state.parkingConfirmed && inZone && standingUp) {
-    if (CONFIG.DEBUG_MODE) console.log(`🛑 ENDING SET`);
+  // ✅ SIMPLE: Just zone + upward direction
+  if (inZone && standingUp) {
+    console.log(`🛑 ENDING SET`);
     endCurrentSet();
-    state.parkingConfirmed = false;
-    state.prevHeadY = 0;
   }
 }
+
+  
+ 
+  
+
 
 // ============================================
 // SET MANAGEMENT
