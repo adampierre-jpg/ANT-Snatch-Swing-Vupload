@@ -1,9 +1,7 @@
 /**
 
-- Version 3.4 — FIXED HAND DETECTION TIMING
-- - Fix: Active side detection now runs BEFORE physics
-- - Fix: Head detection + lowest hand combined for reliable tracking
-- - Maintains all debug features from v3.3
+- Version 3.4 — SINGLE FIX: Active side detection before physics
+- - Only change from v3.3: masterLoop now detects active side BEFORE runPhysics
     */
 
 import { PoseLandmarker, FilesetResolver } from “https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/vision_bundle.mjs”;
@@ -46,17 +44,14 @@ RESET_GRACE_MS_AFTER_LOCK: 2000,
 MIN_DET_CONF: 0.5,
 MIN_TRACK_CONF: 0.5,
 
-// Thresholds (relaxed for debugging)
-HEAD_DIP_THRESHOLD: 0.03,
-HIKE_VY_THRESHOLD: 0.3,
-HIKE_SPEED_THRESHOLD: 0.4,
-
-// Head tracking for side confirmation
-HEAD_DIP_CONFIRM_FRAMES: 3,
+// ✅ RELAXED THRESHOLDS FOR DEBUGGING
+HEAD_DIP_THRESHOLD: 0.03,  // Was 0.02 (more forgiving)
+HIKE_VY_THRESHOLD: 0.3,    // Was 0.4 (easier to trigger)
+HIKE_SPEED_THRESHOLD: 0.4, // Was 0.6
 
 MAKE_WEBHOOK_URL: “https://hook.us2.make.com/bxyeuukaw4v71k32vx26jwiqbumgi19c”,
 
-DEBUG_MODE: true
+DEBUG_MODE: true  // ✅ ENABLE CONSOLE LOGGING
 };
 
 // ============================================
@@ -76,17 +71,12 @@ timeMs: 0,
 
 lastPose: null,
 
-// Hand tracking
-activeTrackingSide: “left”,
+// ✅ TRACK BOTH HANDS IN IDLE
+activeTrackingSide: “left”,  // Which hand we’re currently tracking for velocity
 lockedSide: “unknown”,
 armingSide: null,
 
-// Head tracking for side detection
-headDipFrameCount: 0,
-lastHeadY: 0,
-candidateSide: null,
-
-// Physics (used for active hand)
+// Physics (SHARED - used for active hand)
 prevWrist: null,
 lockedCalibration: null,
 smoothedVelocity: 0,
@@ -219,7 +209,7 @@ state.video.pause();
 }
 
 // ============================================
-// MASTER LOOP
+// MASTER LOOP — ✅ FIXED: Detect side BEFORE physics
 // ============================================
 async function masterLoop(timestamp) {
 requestAnimationFrame(masterLoop);
@@ -251,14 +241,17 @@ drawOverlay();
 return;
 }
 
+// ✅ FIX: Detect active side BEFORE physics when in IDLE
 if (state.isTestRunning) {
-// ✅ FIX: Detect active side BEFORE running physics
 if (state.testStage === “IDLE”) {
-detectActiveSide(pose);
+const lWrist = pose[CONFIG.LEFT.WRIST];
+const rWrist = pose[CONFIG.RIGHT.WRIST];
+if (lWrist && rWrist) {
+state.activeTrackingSide = lWrist.y > rWrist.y ? “left” : “right”;
+}
 }
 
 ```
-// Now physics will use the correct side
 runPhysics(pose, state.timeMs);
 
 if (state.testStage === "IDLE") {
@@ -277,96 +270,43 @@ drawOverlay();
 }
 
 // ============================================
-// ACTIVE SIDE DETECTION (NEW FUNCTION)
-// ============================================
-function detectActiveSide(pose) {
-const lWrist = pose[CONFIG.LEFT.WRIST];
-const rWrist = pose[CONFIG.RIGHT.WRIST];
-const head = pose[CONFIG.HEAD_LANDMARK];
-
-if (!lWrist || !rWrist || !head) return;
-
-// Determine which hand is lower (higher Y = lower on screen)
-const lY = lWrist.y;
-const rY = rWrist.y;
-const lowestSide = lY > rY ? “left” : “right”;
-
-// Check if head is dipping (indicates intentional hike position)
-const headDipping = head.y > state.lastHeadY + CONFIG.HEAD_DIP_THRESHOLD;
-
-// Check if lowest hand is in the floor zone
-const inFloorZone = isWristInFloorZone(pose, lowestSide);
-
-if (CONFIG.DEBUG_MODE) {
-console.log(`[SIDE DETECT] Lowest:${lowestSide} | InZone:${inFloorZone} | HeadDip:${headDipping} | HeadY:${head.y.toFixed(3)} | LastHeadY:${state.lastHeadY.toFixed(3)}`);
-}
-
-// If hand is in floor zone AND head is dipping, this confirms intent
-if (inFloorZone && headDipping) {
-if (state.candidateSide === lowestSide) {
-state.headDipFrameCount++;
-} else {
-state.candidateSide = lowestSide;
-state.headDipFrameCount = 1;
-}
-
-```
-// Require multiple frames of confirmation to avoid false triggers
-if (state.headDipFrameCount >= CONFIG.HEAD_DIP_CONFIRM_FRAMES) {
-  state.activeTrackingSide = lowestSide;
-  if (CONFIG.DEBUG_MODE) {
-    console.log(`✅ ACTIVE SIDE CONFIRMED: ${lowestSide} (head dip + floor zone)`);
-  }
-}
-```
-
-} else if (inFloorZone) {
-// Hand in zone but no head dip - still track it but don’t fully confirm
-state.activeTrackingSide = lowestSide;
-} else {
-// Reset confirmation if conditions aren’t met
-state.headDipFrameCount = 0;
-state.candidateSide = null;
-}
-
-// Update head tracking
-state.lastHeadY = head.y;
-}
-
-// ============================================
 // START/END CONDITIONS
 // ============================================
 function checkStartCondition(pose, timeMs) {
 if (state.testStage !== “IDLE”) return;
 
-const head = pose[CONFIG.HEAD_LANDMARK];
-if (!head) return;
+const lWrist = pose[CONFIG.LEFT.WRIST];
+const rWrist = pose[CONFIG.RIGHT.WRIST];
+if (!lWrist || !rWrist) return;
 
-// Use the already-detected active side
-const activeSide = state.activeTrackingSide;
+const lY = lWrist.y;
+const rY = rWrist.y;
+const activeSide = lY > rY ? “left” : “right”;
+
 const sideIdx = activeSide === “left” ? CONFIG.LEFT : CONFIG.RIGHT;
 const wrist = pose[sideIdx.WRIST];
-
-if (!wrist) return;
+const head = pose[CONFIG.HEAD_LANDMARK];
+if (!wrist || !head) return;
 
 const inZone = isWristInFloorZone(pose, activeSide);
 const headLowering = head.y > state.prevHeadY + CONFIG.HEAD_DIP_THRESHOLD;
 const hikingDown = state.lastVy > CONFIG.HIKE_VY_THRESHOLD && state.lastSpeed > CONFIG.HIKE_SPEED_THRESHOLD;
 
+// ✅ DEBUG LOG
 if (CONFIG.DEBUG_MODE && inZone) {
 console.log(`[START CHECK] Side:${activeSide} | Zone:${inZone} | HeadDip:${headLowering} | Hike:${hikingDown} | Vy:${state.lastVy.toFixed(2)} | Speed:${state.lastSpeed.toFixed(2)}`);
 }
 
 state.prevHeadY = head.y;
 
-// Park confirm: requires head dip while in zone
+// Park confirm
 if (inZone && headLowering) {
 state.parkingConfirmed = true;
 state.armingSide = activeSide;
 if (CONFIG.DEBUG_MODE) console.log(`✅ PARKING CONFIRMED: ${activeSide}`);
 }
 
-// Start trigger: parked + hiking motion detected
+// Start trigger
 if (state.parkingConfirmed && inZone && hikingDown) {
 if (CONFIG.DEBUG_MODE) console.log(`🚀 STARTING SET: ${state.armingSide}`);
 startNewSet(state.armingSide);
@@ -391,19 +331,20 @@ const inZone = isWristInFloorZone(pose, state.lockedSide);
 const headLowering = head.y > state.prevHeadY + CONFIG.HEAD_DIP_THRESHOLD;
 const standingUp = state.lastVy < -0.3 && state.lastSpeed > 0.4;
 
+// ✅ DEBUG LOG
 if (CONFIG.DEBUG_MODE && inZone) {
 console.log(`[END CHECK] Zone:${inZone} | HeadDip:${headLowering} | StandUp:${standingUp} | Vy:${state.lastVy.toFixed(2)}`);
 }
 
 state.prevHeadY = head.y;
 
-// Park confirm for ending
+// Park confirm
 if (inZone && headLowering) {
 state.parkingConfirmed = true;
 if (CONFIG.DEBUG_MODE) console.log(`✅ PARKING CONFIRMED (END)`);
 }
 
-// End trigger: parked + standing up motion
+// End trigger
 if (state.parkingConfirmed && inZone && standingUp) {
 if (CONFIG.DEBUG_MODE) console.log(`🛑 ENDING SET`);
 endCurrentSet();
@@ -426,10 +367,6 @@ state.overheadHoldCount = 0;
 state.phase = “IDLE”;
 state.lockedCalibration = null;
 state.prevWrist = null;
-
-// Reset head tracking for side detection
-state.headDipFrameCount = 0;
-state.candidateSide = null;
 
 state.session.currentSet = {
 id: state.session.history.length + 1,
@@ -462,11 +399,6 @@ state.lockedSide = “unknown”;
 state.session.currentSet = null;
 state.activeTrackingSide = “left”;
 
-// Reset head tracking
-state.headDipFrameCount = 0;
-state.candidateSide = null;
-state.lastHeadY = 0;
-
 setStatus(“Set Saved. Park to start next.”, “#3b82f6”);
 }
 
@@ -474,8 +406,8 @@ setStatus(“Set Saved. Park to start next.”, “#3b82f6”);
 // PHYSICS ENGINE
 // ============================================
 function runPhysics(pose, timeMs) {
-// In IDLE: Track the detected active side (already set by detectActiveSide)
-// In RUNNING: Track the locked side
+// ✅ IN IDLE: Track the lower hand
+// ✅ IN RUNNING: Track the locked side
 const side = state.testStage === “IDLE” ? state.activeTrackingSide : state.lockedSide;
 if (!side || side === “unknown”) return;
 
@@ -485,7 +417,7 @@ const shoulder = pose[idx.SHOULDER];
 const hip = pose[idx.HIP];
 if (!wrist || !shoulder || !hip) return;
 
-// Calibration (torso length in pixels to meters conversion)
+// Calibration
 if (!state.lockedCalibration) {
 const torsoPx = Math.abs(shoulder.y - hip.y) * state.canvas.height;
 state.lockedCalibration = Math.max(50, torsoPx / CONFIG.TORSO_METERS);
@@ -509,7 +441,7 @@ let vx = (dxPx / state.lockedCalibration) / dt;
 let vy = (dyPx / state.lockedCalibration) / dt;
 let speed = Math.hypot(vx, vy);
 
-// Frame normalization to 30fps baseline
+// Frame normalization
 const TARGET_FPS = 30;
 const frameTimeMs = 1000 / TARGET_FPS;
 const actualFrameTimeMs = timeMs - state.prevWrist.t;
@@ -518,20 +450,20 @@ vx *= timeRatio;
 vy *= timeRatio;
 speed = Math.hypot(vx, vy);
 
-// Zero band (ignore micro-movements)
+// Zero band
 if (speed < CONFIG.ZERO_BAND) speed = 0;
 
-// Exponential smoothing
+// Smoothing
 state.smoothedVelocity = CONFIG.SMOOTHING_ALPHA * speed + (1 - CONFIG.SMOOTHING_ALPHA) * state.smoothedVelocity;
 state.smoothedVy = CONFIG.SMOOTHING_ALPHA * vy + (1 - CONFIG.SMOOTHING_ALPHA) * state.smoothedVy;
 
-// Apply ceiling
+// Ceiling
 state.lastSpeed = Math.min(state.smoothedVelocity, CONFIG.MAX_REALISTIC_VELOCITY);
 state.lastVy = Math.min(Math.max(state.smoothedVy, -CONFIG.MAX_REALISTIC_VELOCITY), CONFIG.MAX_REALISTIC_VELOCITY);
 
 state.prevWrist = { x: wrist.x, y: wrist.y, t: timeMs };
 
-// Update UI velocity display
+// Update UI
 if (state.testStage === “RUNNING”) {
 document.getElementById(“val-velocity”).textContent = state.lastSpeed.toFixed(2);
 }
@@ -550,8 +482,6 @@ const hip = pose[idx.HIP];
 const shoulder = pose[idx.SHOULDER];
 const nose = pose[CONFIG.HEAD_LANDMARK];
 
-if (!wrist || !hip || !shoulder || !nose) return;
-
 const isBelowHip = wrist.y > hip.y;
 const isAboveShoulder = wrist.y < shoulder.y;
 const isAboveNose = wrist.y < nose.y;
@@ -569,13 +499,11 @@ state.currentRepPeak = 0;
 }
 }
 else if (state.phase === “CONCENTRIC”) {
-// Track peak velocity until shoulder height
 if (!isAboveShoulder) {
 if (v > state.currentRepPeak) state.currentRepPeak = v;
 }
 
 ```
-// Check for stable lockout position
 const isStable = Math.abs(vy) < CONFIG.LOCKOUT_VY_CUTOFF && v < CONFIG.LOCKOUT_SPEED_CUTOFF;
 
 if (isAboveNose && isStable) {
@@ -631,11 +559,6 @@ state.prevWrist = null;
 state.parkingConfirmed = false;
 state.prevHeadY = 0;
 
-// Reset head tracking for side detection
-state.headDipFrameCount = 0;
-state.candidateSide = null;
-state.lastHeadY = 0;
-
 updateUIValues(0, 0);
 setStatus(“Session Cleared — Ready”, “#3b82f6”);
 }
@@ -660,7 +583,7 @@ pill.style.borderColor = color;
 function drawOverlay() {
 if (!state.lastPose) return;
 
-// Debug overlay (top-left corner)
+// ✅ DEBUG OVERLAY (Top-left corner)
 if (CONFIG.DEBUG_MODE) {
 state.ctx.fillStyle = “#fbbf24”;
 state.ctx.font = “12px monospace”;
@@ -669,8 +592,6 @@ state.ctx.fillText(`Speed: ${state.lastSpeed.toFixed(2)} m/s`, 10, 35);
 state.ctx.fillText(`Vy: ${state.lastVy.toFixed(2)} m/s`, 10, 50);
 state.ctx.fillText(`Stage: ${state.testStage}`, 10, 65);
 state.ctx.fillText(`Parked: ${state.parkingConfirmed}`, 10, 80);
-state.ctx.fillText(`HeadDipFrames: ${state.headDipFrameCount}`, 10, 95);
-state.ctx.fillText(`Candidate: ${state.candidateSide || "none"}`, 10, 110);
 }
 
 const side = state.testStage === “IDLE” ? state.activeTrackingSide : state.lockedSide;
@@ -686,7 +607,6 @@ drawParkingLine(state.lastPose, side, inZone);
 ```
 
 } else {
-// In IDLE: show both wrists, highlight the lowest
 const lWrist = state.lastPose[CONFIG.LEFT.WRIST];
 const rWrist = state.lastPose[CONFIG.RIGHT.WRIST];
 const lY = lWrist?.y || 0;
@@ -694,13 +614,10 @@ const rY = rWrist?.y || 0;
 const lowest = lY > rY ? “left” : “right”;
 
 ```
-// Color based on confirmation status
-const confirmedColor = "#10b981";  // Green when head dip confirmed
-const pendingColor = "#fbbf24";    // Yellow when pending
-const color = state.headDipFrameCount >= CONFIG.HEAD_DIP_CONFIRM_FRAMES ? confirmedColor : pendingColor;
+const color = "#fbbf24";
 
-drawDot(lWrist, lowest === "left", lowest === "left" ? color : "#94a3b8");
-drawDot(rWrist, lowest === "right", lowest === "right" ? color : "#94a3b8");
+drawDot(lWrist, lowest==="left", color);
+drawDot(rWrist, lowest==="right", color);
 
 drawParkingLine(state.lastPose, lowest, isWristInFloorZone(state.lastPose, lowest));
 ```
