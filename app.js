@@ -634,3 +634,10 @@ async function exportToMake() {
 }
 
 initializeApp();
+
+// Inside initializeApp():
+const saveBtn = document.getElementById("btn-save");
+if (saveBtn) {
+    saveBtn.onclick = exportToMake;
+}
+
