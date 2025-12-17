@@ -1,6 +1,6 @@
 /**
- * Version 3.2 — Head-Confirmed Parking + Stable Velocity
- * - Fixes: Duplicate code, async structure, gesture detection
+ * Version 3.3 — DEBUG MODE ENABLED
+ * - Fixes: IDLE velocity tracking, visual feedback, relaxed thresholds
  */
 
 import { PoseLandmarker, FilesetResolver } from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/vision_bundle.mjs";
@@ -22,7 +22,7 @@ const CONFIG = {
     KNEE: 26
   },
   
-  HEAD_LANDMARK: 0,              // Nose
+  HEAD_LANDMARK: 0,
   TORSO_METERS: 0.45,
   
   // Velocity Physics
@@ -38,22 +38,25 @@ const CONFIG = {
   
   // Session Logic
   RESET_GRACE_MS_AFTER_LOCK: 2000,
-  BASELINE_REPS: 3,
-  DROP_WARN: 15,
-  DROP_FAIL: 20,
   
   // MediaPipe
   MIN_DET_CONF: 0.5,
   MIN_TRACK_CONF: 0.5,
   
-  MAKE_WEBHOOK_URL: "https://hook.us2.make.com/bxyeuukaw4v71k32vx26jwiqbumgi19c"
+  // ✅ RELAXED THRESHOLDS FOR DEBUGGING
+  HEAD_DIP_THRESHOLD: 0.03,  // Was 0.02 (more forgiving)
+  HIKE_VY_THRESHOLD: 0.3,    // Was 0.4 (easier to trigger)
+  HIKE_SPEED_THRESHOLD: 0.4, // Was 0.6
+  
+  MAKE_WEBHOOK_URL: "https://hook.us2.make.com/bxyeuukaw4v71k32vx26jwiqbumgi19c",
+  
+  DEBUG_MODE: true  // ✅ ENABLE CONSOLE LOGGING
 };
 
 // ============================================
 // STATE
 // ============================================
 let state = {
-  // System
   video: null,
   canvas: null,
   ctx: null,
@@ -61,21 +64,18 @@ let state = {
   isModelLoaded: false,
   isVideoReady: false,
   
-  // Runtime
   isTestRunning: false,
   testStage: "IDLE",
   timeMs: 0,
   
-  // Tracking
   lastPose: null,
-  lastLoopMs: 0,
   
-  // Set Logic
+  // ✅ TRACK BOTH HANDS IN IDLE
+  activeTrackingSide: "left",  // Which hand we're currently tracking for velocity
   lockedSide: "unknown",
   armingSide: null,
-  lockedAtMs: 0,
   
-  // Physics State
+  // Physics (SHARED - used for active hand)
   prevWrist: null,
   lockedCalibration: null,
   smoothedVelocity: 0,
@@ -92,14 +92,11 @@ let state = {
   currentRepPeak: 0,
   overheadHoldCount: 0,
   
-  // Session Data
   session: {
     currentSet: null,
     history: []
   },
   
-  // Display
-  baseline: 0,
   repHistory: []
 };
 
@@ -111,7 +108,6 @@ async function initializeApp() {
   state.canvas = document.getElementById("canvas");
   state.ctx = state.canvas.getContext("2d");
   
-  // Button Wiring
   document.getElementById("btn-camera").onclick = startCamera;
   document.getElementById("file-input").onchange = handleUpload;
   document.getElementById("btn-start-test").onclick = toggleTest;
@@ -119,7 +115,6 @@ async function initializeApp() {
   const saveBtn = document.getElementById("btn-save");
   if (saveBtn) saveBtn.onclick = exportToMake;
   
-  // Load MediaPipe
   const visionGen = await FilesetResolver.forVisionTasks(
     "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/wasm"
   );
@@ -215,7 +210,7 @@ async function toggleTest() {
 async function masterLoop(timestamp) {
   requestAnimationFrame(masterLoop);
   
-  if (!state.isModelLoaded || !state.video || !state.isTestRunning) return;
+  if (!state.isModelLoaded || !state.video) return;
   
   state.timeMs = timestamp;
   
@@ -242,16 +237,18 @@ async function masterLoop(timestamp) {
     return;
   }
   
-  // Run State Machines
-  runPhysics(pose, state.timeMs);
-  
-  if (state.testStage === "IDLE") {
-    checkStartCondition(pose, state.timeMs);
-  }
-  
-  if (state.testStage === "RUNNING") {
-    runSnatchLogic(pose);
-    checkEndCondition(pose, state.timeMs);
+  // ✅ ALWAYS RUN PHYSICS (even in IDLE)
+  if (state.isTestRunning) {
+    runPhysics(pose, state.timeMs);
+    
+    if (state.testStage === "IDLE") {
+      checkStartCondition(pose, state.timeMs);
+    }
+    
+    if (state.testStage === "RUNNING") {
+      runSnatchLogic(pose);
+      checkEndCondition(pose, state.timeMs);
+    }
   }
   
   drawOverlay();
@@ -263,9 +260,16 @@ async function masterLoop(timestamp) {
 function checkStartCondition(pose, timeMs) {
   if (state.testStage !== "IDLE") return;
   
-  const lY = pose[CONFIG.LEFT.WRIST]?.y || 0;
-  const rY = pose[CONFIG.RIGHT.WRIST]?.y || 0;
+  const lWrist = pose[CONFIG.LEFT.WRIST];
+  const rWrist = pose[CONFIG.RIGHT.WRIST];
+  if (!lWrist || !rWrist) return;
+  
+  const lY = lWrist.y;
+  const rY = rWrist.y;
   const activeSide = lY > rY ? "left" : "right";
+  
+  // ✅ UPDATE TRACKING SIDE (so runPhysics tracks the lower hand)
+  state.activeTrackingSide = activeSide;
   
   const sideIdx = activeSide === "left" ? CONFIG.LEFT : CONFIG.RIGHT;
   const wrist = pose[sideIdx.WRIST];
@@ -273,8 +277,13 @@ function checkStartCondition(pose, timeMs) {
   if (!wrist || !head) return;
   
   const inZone = isWristInFloorZone(pose, activeSide);
-  const headLowering = head.y > state.prevHeadY + 0.02;
-  const hikingDown = state.lastVy > 0.4 && state.lastSpeed > 0.6;
+  const headLowering = head.y > state.prevHeadY + CONFIG.HEAD_DIP_THRESHOLD;
+  const hikingDown = state.lastVy > CONFIG.HIKE_VY_THRESHOLD && state.lastSpeed > CONFIG.HIKE_SPEED_THRESHOLD;
+  
+  // ✅ DEBUG LOG
+  if (CONFIG.DEBUG_MODE && inZone) {
+    console.log(`[START CHECK] Side:${activeSide} | Zone:${inZone} | HeadDip:${headLowering} | Hike:${hikingDown} | Vy:${state.lastVy.toFixed(2)} | Speed:${state.lastSpeed.toFixed(2)}`);
+  }
   
   state.prevHeadY = head.y;
   
@@ -282,10 +291,12 @@ function checkStartCondition(pose, timeMs) {
   if (inZone && headLowering) {
     state.parkingConfirmed = true;
     state.armingSide = activeSide;
+    if (CONFIG.DEBUG_MODE) console.log(`✅ PARKING CONFIRMED: ${activeSide}`);
   }
   
   // Start trigger
   if (state.parkingConfirmed && inZone && hikingDown) {
+    if (CONFIG.DEBUG_MODE) console.log(`🚀 STARTING SET: ${state.armingSide}`);
     startNewSet(state.armingSide);
     state.parkingConfirmed = false;
     state.prevHeadY = 0;
@@ -305,18 +316,25 @@ function checkEndCondition(pose, timeMs) {
   if (!wrist || !head) return;
   
   const inZone = isWristInFloorZone(pose, state.lockedSide);
-  const headLowering = head.y > state.prevHeadY + 0.02;
-  const standingUp = state.lastVy < -0.4 && state.lastSpeed > 0.6;
+  const headLowering = head.y > state.prevHeadY + CONFIG.HEAD_DIP_THRESHOLD;
+  const standingUp = state.lastVy < -0.3 && state.lastSpeed > 0.4;
+  
+  // ✅ DEBUG LOG
+  if (CONFIG.DEBUG_MODE && inZone) {
+    console.log(`[END CHECK] Zone:${inZone} | HeadDip:${headLowering} | StandUp:${standingUp} | Vy:${state.lastVy.toFixed(2)}`);
+  }
   
   state.prevHeadY = head.y;
   
   // Park confirm
   if (inZone && headLowering) {
     state.parkingConfirmed = true;
+    if (CONFIG.DEBUG_MODE) console.log(`✅ PARKING CONFIRMED (END)`);
   }
   
   // End trigger
   if (state.parkingConfirmed && inZone && standingUp) {
+    if (CONFIG.DEBUG_MODE) console.log(`🛑 ENDING SET`);
     endCurrentSet();
     state.parkingConfirmed = false;
     state.prevHeadY = 0;
@@ -329,7 +347,6 @@ function checkEndCondition(pose, timeMs) {
 function startNewSet(side) {
   state.lockedSide = side;
   state.testStage = "RUNNING";
-  state.lockedAtMs = state.timeMs;
   
   // Reset tracking
   state.repHistory = [];
@@ -339,7 +356,6 @@ function startNewSet(side) {
   state.lockedCalibration = null;
   state.prevWrist = null;
   
-  // Create session set
   state.session.currentSet = {
     id: state.session.history.length + 1,
     hand: side,
@@ -348,7 +364,7 @@ function startNewSet(side) {
     lockedAtMs: state.timeMs
   };
 
-  updateUIValues(0, 0, "--", "#fff");
+  updateUIValues(0, 0);
   setStatus(`LOCKED: ${side.toUpperCase()}`, "#10b981");
 }
 
@@ -366,6 +382,7 @@ function endCurrentSet() {
   state.testStage = "IDLE";
   state.lockedSide = "unknown";
   state.session.currentSet = null;
+  state.activeTrackingSide = "left";
 
   setStatus("Set Saved. Park to start next.", "#3b82f6");
 }
@@ -374,8 +391,10 @@ function endCurrentSet() {
 // PHYSICS ENGINE
 // ============================================
 function runPhysics(pose, timeMs) {
-  const side = state.lockedSide;
-  if (side === "unknown") return;
+  // ✅ IN IDLE: Track the lower hand
+  // ✅ IN RUNNING: Track the locked side
+  const side = state.testStage === "IDLE" ? state.activeTrackingSide : state.lockedSide;
+  if (!side || side === "unknown") return;
   
   const idx = side === "left" ? CONFIG.LEFT : CONFIG.RIGHT;
   const wrist = pose[idx.WRIST];
@@ -429,6 +448,7 @@ function runPhysics(pose, timeMs) {
   
   state.prevWrist = { x: wrist.x, y: wrist.y, t: timeMs };
   
+  // Update UI
   if (state.testStage === "RUNNING") {
     document.getElementById("val-velocity").textContent = state.lastSpeed.toFixed(2);
   }
@@ -489,6 +509,8 @@ function recordRep() {
   
   state.repHistory.push(state.currentRepPeak);
   updateUIValues(state.repHistory.length, state.currentRepPeak);
+  
+  if (CONFIG.DEBUG_MODE) console.log(`📊 REP RECORDED: ${state.currentRepPeak.toFixed(2)} m/s`);
 }
 
 // ============================================
@@ -508,6 +530,7 @@ function resetSession() {
   state.repHistory = [];
   state.testStage = "IDLE";
   state.lockedSide = "unknown";
+  state.activeTrackingSide = "left";
   state.armingSide = null;
   state.smoothedVelocity = 0;
   state.smoothedVy = 0;
@@ -518,19 +541,16 @@ function resetSession() {
   state.parkingConfirmed = false;
   state.prevHeadY = 0;
   
-  updateUIValues(0, 0, "--", "#fff");
+  updateUIValues(0, 0);
   setStatus("Session Cleared — Ready", "#3b82f6");
 }
 
 // ============================================
 // UI
 // ============================================
-function updateUIValues(reps, peak, drop = "--", dropColor = "#fff") {
+function updateUIValues(reps, peak) {
   document.getElementById("val-reps").textContent = reps;
   document.getElementById("val-peak").textContent = peak.toFixed(2);
-  const d = document.getElementById("val-drop");
-  d.textContent = drop;
-  d.style.color = dropColor;
 }
 
 function setStatus(text, color) {
@@ -545,7 +565,18 @@ function setStatus(text, color) {
 function drawOverlay() {
   if (!state.lastPose) return;
   
-  const side = state.lockedSide;
+  // ✅ DEBUG OVERLAY (Top-left corner)
+  if (CONFIG.DEBUG_MODE) {
+    state.ctx.fillStyle = "#fbbf24";
+    state.ctx.font = "12px monospace";
+    state.ctx.fillText(`Side: ${state.testStage === "IDLE" ? state.activeTrackingSide : state.lockedSide}`, 10, 20);
+    state.ctx.fillText(`Speed: ${state.lastSpeed.toFixed(2)} m/s`, 10, 35);
+    state.ctx.fillText(`Vy: ${state.lastVy.toFixed(2)} m/s`, 10, 50);
+    state.ctx.fillText(`Stage: ${state.testStage}`, 10, 65);
+    state.ctx.fillText(`Parked: ${state.parkingConfirmed}`, 10, 80);
+  }
+  
+  const side = state.testStage === "IDLE" ? state.activeTrackingSide : state.lockedSide;
 
   if (state.testStage === "RUNNING" && side !== "unknown") {
     const idx = side === "left" ? CONFIG.LEFT : CONFIG.RIGHT;
@@ -555,18 +586,18 @@ function drawOverlay() {
     const inZone = isWristInFloorZone(state.lastPose, side);
     drawParkingLine(state.lastPose, side, inZone);
   } else {
-    const lY = state.lastPose[CONFIG.LEFT.WRIST]?.y || 0;
-    const rY = state.lastPose[CONFIG.RIGHT.WRIST]?.y || 0;
+    const lWrist = state.lastPose[CONFIG.LEFT.WRIST];
+    const rWrist = state.lastPose[CONFIG.RIGHT.WRIST];
+    const lY = lWrist?.y || 0;
+    const rY = rWrist?.y || 0;
     const lowest = lY > rY ? "left" : "right";
     
-    const isStill = state.lastSpeed < 1.5;
-    const color = isStill ? "#fbbf24" : "#94a3b8";
+    const color = "#fbbf24";
 
-    drawDot(state.lastPose[CONFIG.LEFT.WRIST], lowest==="left", color);
-    drawDot(state.lastPose[CONFIG.RIGHT.WRIST], lowest==="right", color);
+    drawDot(lWrist, lowest==="left", color);
+    drawDot(rWrist, lowest==="right", color);
     
-    drawParkingLine(state.lastPose, "left", false);
-    drawParkingLine(state.lastPose, "right", false);
+    drawParkingLine(state.lastPose, lowest, isWristInFloorZone(state.lastPose, lowest));
   }
 }
 
@@ -644,7 +675,4 @@ async function exportToMake() {
   }
 }
 
-// ============================================
-// START
-// ============================================
 initializeApp();
