@@ -41,7 +41,7 @@ const CONFIG = {
   // 0.3s Handshake Config
   ARM_MS_REQUIRED: 300,   // 0.3 seconds to start
   RESET_MS_REQUIRED: 300, // 0.3 seconds to end
-  STILLNESS_THRESHOLD: .8, // m/s (Must be still to trigger start/end)
+  STILLNESS_THRESHOLD: .1, // m/s (Must be still to trigger start/end)
   RESET_GRACE_MS_AFTER_LOCK: 1000 // Buffer so you don't unlock instantly on pickup
 };
 
