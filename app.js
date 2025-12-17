@@ -43,8 +43,9 @@ LOCKOUT_SPEED_CUTOFF: 1.0, // Was 1.40 (Must be very still overhead)
   RESET_MS_REQUIRED: 150,      // End: 0.15s (Snap-Park)
   STILLNESS_THRESHOLD_START: 1.5, // Start: Permissive
   STILLNESS_THRESHOLD_END: 0.8,   // End: Strict (Must be stopped)
-  RESET_GRACE_MS_AFTER_LOCK: 1500 // Buffer before you can end
-   MAKE_WEBHOOK_URL: https://hook.us2.make.com/iokrllng8f85f6bsyi903oua0fj4w42a
+  RESET_GRACE_MS_AFTER_LOCK: 1500, // Buffer before you can end
+
+   MAKE_WEBHOOK_URL: "https://hook.us2.make.com/iokrllng8f85f6bsyi903oua0fj4w42a"
 };
 
 let state = {
@@ -631,14 +632,16 @@ async function exportToMake() {
       setStatus("Network Error (Check Console)", "#ef4444");
   }
   */
-const saveBtn = document.getElementById("btn-save");
-if (saveBtn) {
-    saveBtn.onclick = exportToMake;
+
 
 }
 
-initializeApp();
+// Wire button and initialize
+const saveBtn = document.getElementById("btn-save");
+if (saveBtn) {
+    saveBtn.onclick = exportToMake;
+}
 
-// Inside initializeApp():
+initializeApp();
 
 
