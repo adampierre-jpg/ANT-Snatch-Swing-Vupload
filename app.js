@@ -9,21 +9,31 @@
 import { PoseLandmarker, FilesetResolver } from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/vision_bundle.mjs";
 
 const CONFIG = {
-  // Landmarks
-  LEFT:  { WRIST: 15, SHOULDER: 11, HIP: 23, KNEE: 25, ANKLE: 27 },
-  RIGHT: { WRIST: 16, SHOULDER: 12, HIP: 24, KNEE: 26, ANKLE: 28 },
+  // Your existing LEFT/RIGHT landmark indexes...
+  LEFT: {
+    WRIST: 15,
+    SHOULDER: 11,
+    HIP: 23,
+    // ... etc
+  },
+  RIGHT: {
+    WRIST: 16,
+    SHOULDER: 12,
+    HIP: 24,
+    // ... etc
+  },
+  
+  // ✅ ADD THESE:
+  HEAD_LANDMARK: 0,              // Nose for head tracking
+  TORSO_METERS: 0.45,            // Your existing torso calibration
+  SMOOTHING_ALPHA: 0.15,         // Heavy smoothing for velocity
+  MAX_REALISTIC_VELOCITY: 8.0,   // Cap outliers
+  ZERO_BAND: 0.1,                // Dead zone
+  MIN_DT: 0.016,                 // ~60fps min
+  MAX_DT: 0.1,                   // Skip lag spikes
+  RESET_GRACE_MS_AFTER_LOCK: 2000,
 
-  // Tracking Quality
-  MIN_DET_CONF: 0.5,
-  MIN_TRACK_CONF: 0.5,
-
-  // Physics Config
-  SMOOTHING_ALPHA: 0.30,
-  MAX_REALISTIC_VELOCITY: 10.0,
-  MIN_DT: 0.01,
-  MAX_DT: 0.10,
-  TORSO_METERS: 0.5,
-  ZERO_BAND: 0.3, // Velocity < 0.3 is forced to 0.0
+  
 
   // Update these in CONFIG:
 LOCKOUT_VY_CUTOFF: 0.35,  // Was 0.40 (Stricter vertical stop)
@@ -99,10 +109,22 @@ async function initializeApp() {
   state.video = document.getElementById("video");
   state.canvas = document.getElementById("canvas");
   state.ctx = state.canvas.getContext("2d");
-
+  document.getElementById("btn-camera").onclick = startCamera;
+  document.getElementById("file-input").onchange = handleUpload;
+  document.getElementById("btn-start-test").onclick = toggleTest;
+  document.getElementById("btn-reset").onclick = resetSession;
+const saveBtn = document.getElementById("btn-save");
+  if (saveBtn) saveBtn.onclick = exportToMake;
+  
+  // ... rest of init ...
   const visionGen = await FilesetResolver.forVisionTasks(
     "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/wasm"
   );
+
+  
+  
+  
+}
 
   state.landmarker = await PoseLandmarker.createFromOptions(visionGen, {
     baseOptions: {
@@ -197,33 +219,41 @@ async function toggleTest() {
 // --- MASTER LOOP ---
 
 function masterLoop(timestamp) {
-  const dt = timestamp - state.lastLoopMs;
-  state.lastLoopMs = timestamp;
-
-  if (state.isModelLoaded && state.isVideoReady && state.video.readyState >= 2) {
-    const result = state.landmarker.detectForVideo(state.video, timestamp);
-
-    if (result.landmarks && result.landmarks.length > 0) {
-      state.lastPose = result.landmarks[0];
-      
-      // 1. Physics (Velocity)
-      if (state.testStage === "IDLE") {
-         calculatePassiveVelocity(state.lastPose, timestamp);
-      } else {
-         runPhysics(state.lastPose, timestamp);
-      }
-
-      // 2. Logic
-      if (state.isTestRunning) {
-        if (state.testStage === "IDLE") {
-           checkStartCondition(state.lastPose, dt);
-        } else if (state.testStage === "RUNNING") {
-           runSnatchLogic(); 
-           checkEndCondition(state.lastPose, dt, timestamp);
-        }
-      }
+  requestAnimationFrame(masterLoop);
+  
+  if (!state.isModelLoaded || !state.video) return;
+  
+  state.timeMs = timestamp;
+  
+  // Draw video frame
+  state.ctx.clearRect(0, 0, state.canvas.width, state.canvas.height);
+  state.ctx.drawImage(state.video, 0, 0, state.canvas.width, state.canvas.height);
+  
+  // Detect pose
+  let pose = null;
+  if (state.detector) {
+    const results = await state.detector.estimatePoses(state.canvas);
+    if (results && results.length > 0) {
+      pose = results[0].keypoints;
+      drawSkeleton(pose);  // Your existing draw function
     }
   }
+  
+  if (!pose) return;
+  
+  // ✅ RUN ALL STATE MACHINES
+  runPhysics(pose, state.timeMs);
+  
+  if (state.testStage === "IDLE") {
+    checkStartCondition(pose, state.timeMs);
+  }
+  
+  if (state.testStage === "RUNNING") {
+    checkEndCondition(pose, state.timeMs);
+    // Your existing rep detection logic here
+  }
+}
+
 
   drawOverlay();
   requestAnimationFrame(masterLoop);
@@ -231,54 +261,69 @@ function masterLoop(timestamp) {
 
 // --- LOGIC: START / END ---
 
-function checkStartCondition(pose, dtMs) {
-  // Lowest Hand Wins
-  const lY = pose[CONFIG.LEFT.WRIST].y;
-  const rY = pose[CONFIG.RIGHT.WRIST].y;
-  const activeSide = lY > rY ? "left" : "right";
+function checkStartCondition(pose, timeMs) {
+  if (state.testStage !== "IDLE") return;
+  
+  const lY = pose[CONFIG.LEFT.WRIST]?.y || 0;
+  const rY = pose[CONFIG.RIGHT.WRIST]?.y || 0;
+  const activeSide = lY > rY ? "left" : "right";  // Dominant low hand
+  
+  const sideIdx = activeSide === "left" ? CONFIG.LEFT : CONFIG.RIGHT;
+  const wrist = pose[sideIdx.WRIST];
+  const head = pose[CONFIG.HEAD_LANDMARK];  // Nose Y
+  if (!wrist || !head) return;
   
   const inZone = isWristInFloorZone(pose, activeSide);
-  const isStill = state.lastSpeed < CONFIG.STILLNESS_THRESHOLD_START;
-
-  if (inZone && isStill) {
-    if (state.armingSide !== activeSide) {
-       state.dwellTimerMs = 0;
-       state.armingSide = activeSide;
-    }
-    state.dwellTimerMs += dtMs;
-  } else {
-    state.dwellTimerMs = 0;
-    state.armingSide = null;
+  const headLowering = head.y > state.prevHeadY + 0.02;  // Dip = ready position
+  const hikingDown = state.lastVy > 0.4 && state.lastSpeed > 0.6;  // Pull backswing
+  
+  state.prevHeadY = head.y;
+  
+  // Park confirm: Floor + dip
+  if (inZone && headLowering) {
+    state.parkingConfirmed = true;
+    state.armingSide = activeSide;  // Auto-arm
   }
-
-  if (state.dwellTimerMs >= CONFIG.ARM_MS_REQUIRED) {
+  
+  // Start trigger: Confirmed + hike
+  if (state.parkingConfirmed && inZone && hikingDown) {
     startNewSet(state.armingSide);
+    state.parkingConfirmed = false;
+    state.prevHeadY = 0;
   }
 }
 
-function checkEndCondition(pose, dtMs, totalTimeMs) {
-  if (totalTimeMs - state.lockedAtMs < CONFIG.RESET_GRACE_MS_AFTER_LOCK) return;
 
-  const inZone = isWristInFloorZone(pose, state.lockedSide);
-  
-  // --- SNAP-PARK LOGIC ---
-  // 1. Speed must be LOW (Stopped)
-  const isStill = state.lastSpeed < CONFIG.STILLNESS_THRESHOLD_END; // < 0.8
-  
-  // 2. Direction must NOT be UP (Vy negative = Up)
-  // If Vy < -0.5, you are hiking/swinging up.
-  const isNotPullingUp = state.lastVy > -0.5;
 
-  if (inZone && isStill && isNotPullingUp) {
-    state.dwellTimerMs += dtMs;
-  } else {
-    state.dwellTimerMs = 0;
+function checkEndCondition(pose, timeMs) {
+  if (state.testStage !== "RUNNING") return;
+  if (!state.session.currentSet || (timeMs - state.session.currentSet.lockedAtMs < CONFIG.RESET_GRACE_MS_AFTER_LOCK)) return;
+  
+  const sideIdx = state.lockedSide === "left" ? CONFIG.LEFT : CONFIG.RIGHT;
+  const wrist = pose[sideIdx.WRIST];
+  const head = pose[CONFIG.HEAD_LANDMARK];  // Nose Y
+  if (!wrist || !head) return;
+  
+  const inZone = isWristInFloorZone(pose, state.lockedSide);  // Your existing func
+  const headLowering = head.y > state.prevHeadY + 0.02;      // Dip threshold
+  const standingUp = state.lastVy < -0.4 && state.lastSpeed > 0.6;  // Up + moving
+  
+  state.prevHeadY = head.y;  // Update every frame
+  
+  // Park confirm: Floor zone + head dip (handles slow/quick)
+  if (inZone && headLowering) {
+    state.parkingConfirmed = true;
   }
-
-  if (state.dwellTimerMs >= CONFIG.RESET_MS_REQUIRED) { // 150ms trigger
+  
+  // End trigger: Confirmed park + standing
+  if (state.parkingConfirmed && inZone && standingUp) {
     endCurrentSet();
+    state.parkingConfirmed = false;
+    state.prevHeadY = 0;  // Reset
   }
 }
+
+
 
 function startNewSet(side) {
   state.lockedSide = side;
@@ -360,7 +405,7 @@ function runPhysics(pose, timeMs) {
   const hip = pose[idx.HIP];
   if (!wrist || !shoulder || !hip) return;
 
-  // ✅ STABLE CALIBRATION
+  // Stable Calibration (min 50px guard)
   if (!state.lockedCalibration) {
     const torsoPx = Math.abs(shoulder.y - hip.y) * state.canvas.height;
     state.lockedCalibration = Math.max(50, torsoPx / CONFIG.TORSO_METERS);
@@ -370,6 +415,47 @@ function runPhysics(pose, timeMs) {
     state.prevWrist = { x: wrist.x, y: wrist.y, t: timeMs };
     return;
   }
+  
+  const dt = (timeMs - state.prevWrist.t) / 1000;
+  if (dt < CONFIG.MIN_DT || dt > CONFIG.MAX_DT) {
+    state.prevWrist = { x: wrist.x, y: wrist.y, t: timeMs };
+    return;
+  }
+
+  const dxPx = (wrist.x - state.prevWrist.x) * state.canvas.width;
+  const dyPx = (wrist.y - state.prevWrist.y) * state.canvas.height;
+
+  let vx = (dxPx / state.lockedCalibration) / dt;
+  let vy = (dyPx / state.lockedCalibration) / dt;
+  let speed = Math.hypot(vx, vy);
+
+  // Frame-Rate Normalization (fixes video replay jitter)
+  const TARGET_FPS = 30;
+  const frameTimeMs = 1000 / TARGET_FPS;
+  const actualFrameTimeMs = timeMs - state.prevWrist.t;
+  const timeRatio = frameTimeMs / actualFrameTimeMs;
+  vx *= timeRatio;
+  vy *= timeRatio;
+  speed = Math.hypot(vx, vy);
+
+  // Zero Band
+  if (speed < CONFIG.ZERO_BAND) speed = 0;
+
+  // Heavy Smoothing
+  state.smoothedVelocity = CONFIG.SMOOTHING_ALPHA * speed + (1 - CONFIG.SMOOTHING_ALPHA) * state.smoothedVelocity;
+  state.smoothedVy = CONFIG.SMOOTHING_ALPHA * vy + (1 - CONFIG.SMOOTHING_ALPHA) * state.smoothedVy;
+  
+  // Velocity Ceiling
+  state.lastSpeed = Math.min(state.smoothedVelocity, CONFIG.MAX_REALISTIC_VELOCITY);
+  state.lastVy = Math.min(Math.max(state.smoothedVy, -CONFIG.MAX_REALISTIC_VELOCITY), CONFIG.MAX_REALISTIC_VELOCITY);
+  
+  state.prevWrist = { x: wrist.x, y: wrist.y, t: timeMs };
+  
+  if (state.testStage === "RUNNING") {
+    document.getElementById("val-velocity").textContent = state.lastSpeed.toFixed(2);
+  }
+}
+
   
   const dt = (timeMs - state.prevWrist.t) / 1000;
   if (dt < CONFIG.MIN_DT || dt > CONFIG.MAX_DT) {
@@ -497,27 +583,36 @@ function updateUIValues(reps, peak, drop, dropColor) {
 }
 
 function resetSession() {
-  // 1. Clear Session Data
+  // Clear Session Data
   state.session = { currentSet: null, history: [] };
   state.repHistory = [];
   
-  // 2. Reset State Machine
+  // Reset State Machine
   state.testStage = "IDLE";
   state.lockedSide = "unknown";
   state.armingSide = null;
   state.dwellTimerMs = 0;
   
-  // 3. Reset Physics (Crucial to stop "phantom" movement)
+  // Reset Physics
   state.smoothedVelocity = 0;
   state.smoothedVy = 0;
   state.lastSpeed = 0;
+  state.lastVy = 0;
+  state.lockedCalibration = null;
+  state.prevWrist = null;
   
-  // 4. Reset UI
+  // Reset Gesture Tracking
+  state.parkingConfirmed = false;
+  state.prevHeadY = 0;
+  state.gestureState = { phase: null, side: null };
+  
+  // Reset UI
   updateUIValues(0, 0);
   setStatus("Session Cleared — Ready", "#3b82f6");
   
   console.log("Session Reset Complete");
 }
+
 
 
 function setStatus(text, color) {
@@ -655,11 +750,6 @@ async function exportToMake() {
 
 }
 
-// Wire button and initialize
-const saveBtn = document.getElementById("btn-save");
-if (saveBtn) {
-    saveBtn.onclick = exportToMake;
-}
 
 initializeApp();
 
