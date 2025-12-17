@@ -1,13 +1,16 @@
 import { PoseLandmarker, FilesetResolver } from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/vision_bundle.mjs";
 
 const CONFIG = {
-    WRIST_ID: 16,     // Right Wrist
-    SHOULDER_ID: 12,  // Right Shoulder
-    HIP_ID: 24,       // Right Hip
-    
-    // Physics Tuning
-    SMOOTHING_ALPHA: 0.3, // 0.1 (Heavy smooth) to 1.0 (Raw)
-    MAX_REALISTIC_VELOCITY: 10, // m/s
+    LEFT:  { WRIST: 15, SHOULDER: 11, HIP: 23, KNEE: 25, ANKLE: 27 },
+  RIGHT: { WRIST: 16, SHOULDER: 12, HIP: 24, KNEE: 26, ANKLE: 28 },
+    MIN_DET_CONF: 0.5,
+  MIN_TRACK_CONF: 0.5,
+  // Physics / VBT
+  SMOOTHING_ALPHA: 0.30,
+  MAX_REALISTIC_VELOCITY: 10.0, // m/s
+  MIN_DT: 0.01,                 // s
+  MAX_DT: 0.10,                 // s
+  TORSO_METERS: 0.5,
     
     // Drop-off Alerts
     DROP_WARN: 15,
