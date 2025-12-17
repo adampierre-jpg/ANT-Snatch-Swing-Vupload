@@ -387,44 +387,70 @@ function runPhysics(pose, timeMs) {
   }
 }
 
+// --- REPLACES CURRENT runSnatchLogic() ---
+
 function runSnatchLogic() {
   const v = state.smoothedVelocity;
   const vy = state.smoothedVy;
   const pose = state.lastPose;
+  
+  // Handlers
   const idx = state.lockedSide === "left" ? CONFIG.LEFT : CONFIG.RIGHT;
   const wrist = pose[idx.WRIST];
-  const shoulder = pose[idx.SHOULDER];
   const hip = pose[idx.HIP];
+  const shoulder = pose[idx.SHOULDER];
+  const nose = pose[0]; // Nose is always index 0
 
+  // 1. ZONES
+  // Note: Y is normalized (0=top, 1=bottom). Smaller Y is higher.
   const isBelowHip = wrist.y > hip.y;
   const isAboveShoulder = wrist.y < shoulder.y;
+  const isAboveNose = wrist.y < nose.y; // Strict Height Check
 
+  // 2. STATE MACHINE
   if (state.phase === "IDLE" || state.phase === "LOCKOUT") {
+    // Reset when bell drops below hip (Hike/Backswing)
     if (isBelowHip) {
       state.phase = "BOTTOM";
       state.overheadHoldCount = 0;
     }
-  } else if (state.phase === "BOTTOM") {
+  } 
+  else if (state.phase === "BOTTOM") {
+    // Trigger Concentric phase when bell passes hip upward
     if (!isBelowHip) {
       state.phase = "CONCENTRIC";
-      state.currentRepPeak = 0;
+      state.currentRepPeak = 0; // Reset peak for this rep
     }
-  } else if (state.phase === "CONCENTRIC") {
-    if (v > state.currentRepPeak) state.currentRepPeak = v;
+  } 
+  else if (state.phase === "CONCENTRIC") {
+    // A. Track Velocity (ONLY while below shoulder to capture hip power)
+    if (!isAboveShoulder) { 
+        if (v > state.currentRepPeak) state.currentRepPeak = v;
+    }
 
-    const lockoutOk = isAboveShoulder && Math.abs(vy) < CONFIG.LOCKOUT_VY_CUTOFF && v < CONFIG.LOCKOUT_SPEED_CUTOFF;
+    // B. Check for Lockout
+    // Criteria: Above Nose + Low Vertical Speed + Low Total Speed
+    const isStable = Math.abs(vy) < CONFIG.LOCKOUT_VY_CUTOFF && v < CONFIG.LOCKOUT_SPEED_CUTOFF;
     
-    if (lockoutOk) {
+    if (isAboveNose && isStable) {
+      // Must hold for ~200ms (6 frames @ 30fps)
       state.overheadHoldCount++;
-      if (state.overheadHoldCount >= CONFIG.OVERHEAD_HOLD_FRAMES) {
+      if (state.overheadHoldCount >= 6) { // Was 2
         recordRep();
       }
     } else {
+      // If they drop or lose stability, reset count
       state.overheadHoldCount = 0;
-      if (isBelowHip) state.phase = "BOTTOM";
+      
+      // If they drop all the way down without locking out, fail the rep
+      if (isBelowHip) {
+          state.phase = "BOTTOM";
+          state.currentRepPeak = 0; // Discard partial data
+      }
     }
   }
 }
+
 
 function recordRep() {
   state.phase = "LOCKOUT";
