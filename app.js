@@ -326,6 +326,7 @@ function startNewSet(side) {
   
   // Reset tracking
   state.repHistory = [];
+  state.baseline = 0;  // ✅ ADD THIS LINE
   state.currentRepPeak = 0;
   state.overheadHoldCount = 0;
   state.phase = "IDLE";
@@ -340,9 +341,12 @@ function startNewSet(side) {
     lockedAtMs: state.timeMs
   };
 
-  updateUIValues(0, 0);
+  updateUIValues(0, 0, "--", "#fff");
   setStatus(`LOCKED: ${side.toUpperCase()}`, "#10b981");
 }
+
+
+
 
 function endCurrentSet() {
   if (state.session.currentSet) {
@@ -530,6 +534,7 @@ function isWristInFloorZone(pose, side) {
 function resetSession() {
   state.session = { currentSet: null, history: [] };
   state.repHistory = [];
+  state.baseline = 0;  // ✅ ADD THIS LINE
   state.testStage = "IDLE";
   state.lockedSide = "unknown";
   state.activeTrackingSide = "left";
@@ -540,12 +545,12 @@ function resetSession() {
   state.lastVy = 0;
   state.lockedCalibration = null;
   state.prevWrist = null;
-  state.parkingConfirmed = false;
-  state.prevHeadY = 0;
   
-  updateUIValues(0, 0);
+  updateUIValues(0, 0, "--", "#fff");
   setStatus("Session Cleared — Ready", "#3b82f6");
 }
+
+  
 
 // ============================================
 // UI
