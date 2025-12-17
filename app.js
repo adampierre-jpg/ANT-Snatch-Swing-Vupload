@@ -449,6 +449,7 @@ function runSnatchLogic() {
       if (state.overheadHoldCount >= 2) { // Was 6
         recordRep();
       }
+      }
     
     }
   }
