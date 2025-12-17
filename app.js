@@ -360,15 +360,17 @@ function runPhysics(pose, timeMs) {
   const hip = pose[idx.HIP];
   if (!wrist || !shoulder || !hip) return;
 
+  // ✅ STABLE CALIBRATION
   if (!state.lockedCalibration) {
     const torsoPx = Math.abs(shoulder.y - hip.y) * state.canvas.height;
-    state.lockedCalibration = torsoPx > 0 ? torsoPx / CONFIG.TORSO_METERS : 100;
+    state.lockedCalibration = Math.max(50, torsoPx / CONFIG.TORSO_METERS);
   }
 
   if (!state.prevWrist) {
     state.prevWrist = { x: wrist.x, y: wrist.y, t: timeMs };
     return;
   }
+  
   const dt = (timeMs - state.prevWrist.t) / 1000;
   if (dt < CONFIG.MIN_DT || dt > CONFIG.MAX_DT) {
     state.prevWrist = { x: wrist.x, y: wrist.y, t: timeMs };
@@ -378,25 +380,37 @@ function runPhysics(pose, timeMs) {
   const dxPx = (wrist.x - state.prevWrist.x) * state.canvas.width;
   const dyPx = (wrist.y - state.prevWrist.y) * state.canvas.height;
 
-  const vx = (dxPx / state.lockedCalibration) / dt;
-  const vy = (dyPx / state.lockedCalibration) / dt;
+  let vx = (dxPx / state.lockedCalibration) / dt;
+  let vy = (dyPx / state.lockedCalibration) / dt;
   let speed = Math.hypot(vx, vy);
+
+  // ✅ FRAME-RATE NORMALIZATION (Fixes video playback jitter)
+  const TARGET_FPS = 30;
+  const frameTimeMs = 1000 / TARGET_FPS;
+  const actualFrameTimeMs = timeMs - state.prevWrist.t;
+  const timeRatio = frameTimeMs / actualFrameTimeMs;
+  vx *= timeRatio;
+  vy *= timeRatio;
+  speed = Math.hypot(vx, vy);
 
   // ZERO BAND
   if (speed < CONFIG.ZERO_BAND) speed = 0;
 
+  // ✅ HEAVY SMOOTHING
   state.smoothedVelocity = CONFIG.SMOOTHING_ALPHA * speed + (1 - CONFIG.SMOOTHING_ALPHA) * state.smoothedVelocity;
   state.smoothedVy = CONFIG.SMOOTHING_ALPHA * vy + (1 - CONFIG.SMOOTHING_ALPHA) * state.smoothedVy;
   
-  state.lastSpeed = state.smoothedVelocity;
-  state.lastVy = state.smoothedVy;
+  // ✅ VELOCITY CEILING
+  state.lastSpeed = Math.min(state.smoothedVelocity, CONFIG.MAX_REALISTIC_VELOCITY);
+  state.lastVy = Math.min(Math.max(state.smoothedVy, -CONFIG.MAX_REALISTIC_VELOCITY), CONFIG.MAX_REALISTIC_VELOCITY);
   
   state.prevWrist = { x: wrist.x, y: wrist.y, t: timeMs };
   
   if (state.testStage === "RUNNING") {
-    document.getElementById("val-velocity").textContent = state.smoothedVelocity.toFixed(2);
+    document.getElementById("val-velocity").textContent = state.lastSpeed.toFixed(2);
   }
 }
+
 
 // --- REPLACES CURRENT runSnatchLogic() ---
 
