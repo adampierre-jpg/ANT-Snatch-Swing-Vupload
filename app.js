@@ -1,63 +1,57 @@
 /**
- * Version 3.1 — "Snap-Park" Logic
- * 
- * - START: 0.5s dwell (Deliberate) - "Lowest Hand" wins.
- * - END: 0.15s dwell (Fast) - Guarded by "Not Pulling Up" check.
- * - FIX: Prevents missing "Touch-and-Go" parks while ignoring hikes.
+ * Version 3.2 — Head-Confirmed Parking + Stable Velocity
+ * - Fixes: Duplicate code, async structure, gesture detection
  */
 
 import { PoseLandmarker, FilesetResolver } from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/vision_bundle.mjs";
 
+// ============================================
+// CONFIG
+// ============================================
 const CONFIG = {
-  // Your existing LEFT/RIGHT landmark indexes...
   LEFT: {
     WRIST: 15,
     SHOULDER: 11,
     HIP: 23,
-    // ... etc
+    KNEE: 25
   },
   RIGHT: {
     WRIST: 16,
     SHOULDER: 12,
     HIP: 24,
-    // ... etc
+    KNEE: 26
   },
   
-  // ✅ ADD THESE:
-  HEAD_LANDMARK: 0,              // Nose for head tracking
-  TORSO_METERS: 0.45,            // Your existing torso calibration
-  SMOOTHING_ALPHA: 0.15,         // Heavy smoothing for velocity
-  MAX_REALISTIC_VELOCITY: 8.0,   // Cap outliers
-  ZERO_BAND: 0.1,                // Dead zone
-  MIN_DT: 0.016,                 // ~60fps min
-  MAX_DT: 0.1,                   // Skip lag spikes
-  RESET_GRACE_MS_AFTER_LOCK: 2000,
-
+  HEAD_LANDMARK: 0,              // Nose
+  TORSO_METERS: 0.45,
   
-
-  // Update these in CONFIG:
-LOCKOUT_VY_CUTOFF: 0.35,  // Was 0.40 (Stricter vertical stop)
-LOCKOUT_SPEED_CUTOFF: 1.0, // Was 1.40 (Must be very still overhead)
-
-
-  // Drop Feedback
+  // Velocity Physics
+  SMOOTHING_ALPHA: 0.15,
+  MAX_REALISTIC_VELOCITY: 8.0,
+  ZERO_BAND: 0.1,
+  MIN_DT: 0.016,
+  MAX_DT: 0.1,
+  
+  // Lockout Detection
+  LOCKOUT_VY_CUTOFF: 0.35,
+  LOCKOUT_SPEED_CUTOFF: 1.0,
+  
+  // Session Logic
+  RESET_GRACE_MS_AFTER_LOCK: 2000,
   BASELINE_REPS: 3,
   DROP_WARN: 15,
   DROP_FAIL: 20,
-
-  // Floor/Zone Logic
-  MIN_SHANK_LEN_NORM: 0.06,
   
-  // --- HANDSHAKE LOGIC ---
-  ARM_MS_REQUIRED: 500,        // Start: 0.5s (Deliberate)
-  RESET_MS_REQUIRED: 150,      // End: 0.15s (Snap-Park)
-  STILLNESS_THRESHOLD_START: 1.5, // Start: Permissive
-  STILLNESS_THRESHOLD_END: 0.8,   // End: Strict (Must be stopped)
-  RESET_GRACE_MS_AFTER_LOCK: 1500, // Buffer before you can end
-
-   MAKE_WEBHOOK_URL: "https://hook.us2.make.com/bxyeuukaw4v71k32vx26jwiqbumgi19c"
+  // MediaPipe
+  MIN_DET_CONF: 0.5,
+  MIN_TRACK_CONF: 0.5,
+  
+  MAKE_WEBHOOK_URL: "https://hook.us2.make.com/bxyeuukaw4v71k32vx26jwiqbumgi19c"
 };
 
+// ============================================
+// STATE
+// ============================================
 let state = {
   // System
   video: null,
@@ -69,7 +63,8 @@ let state = {
   
   // Runtime
   isTestRunning: false,
-  testStage: "IDLE", // IDLE | RUNNING
+  testStage: "IDLE",
+  timeMs: 0,
   
   // Tracking
   lastPose: null,
@@ -79,8 +74,7 @@ let state = {
   lockedSide: "unknown",
   armingSide: null,
   lockedAtMs: 0,
-  dwellTimerMs: 0,
-
+  
   // Physics State
   prevWrist: null,
   lockedCalibration: null,
@@ -88,7 +82,11 @@ let state = {
   smoothedVy: 0,
   lastSpeed: 0,
   lastVy: 0,
-
+  
+  // Gesture Detection
+  parkingConfirmed: false,
+  prevHeadY: 0,
+  
   // Rep Logic
   phase: "IDLE",
   currentRepPeak: 0,
@@ -96,36 +94,36 @@ let state = {
   
   // Session Data
   session: {
-    currentSet: null, 
+    currentSet: null,
     history: []
   },
   
-  // Display Helpers
+  // Display
   baseline: 0,
-  repHistory: [] 
+  repHistory: []
 };
 
+// ============================================
+// INITIALIZATION
+// ============================================
 async function initializeApp() {
   state.video = document.getElementById("video");
   state.canvas = document.getElementById("canvas");
   state.ctx = state.canvas.getContext("2d");
+  
+  // Button Wiring
   document.getElementById("btn-camera").onclick = startCamera;
   document.getElementById("file-input").onchange = handleUpload;
   document.getElementById("btn-start-test").onclick = toggleTest;
   document.getElementById("btn-reset").onclick = resetSession;
-const saveBtn = document.getElementById("btn-save");
+  const saveBtn = document.getElementById("btn-save");
   if (saveBtn) saveBtn.onclick = exportToMake;
   
-  // ... rest of init ...
+  // Load MediaPipe
   const visionGen = await FilesetResolver.forVisionTasks(
     "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/wasm"
   );
-
   
-  
-  
-}
-
   state.landmarker = await PoseLandmarker.createFromOptions(visionGen, {
     baseOptions: {
       modelAssetPath: "https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_full/float16/1/pose_landmarker_full.task",
@@ -140,19 +138,14 @@ const saveBtn = document.getElementById("btn-save");
   state.isModelLoaded = true;
   document.getElementById("loading-overlay").classList.add("hidden");
   setStatus("Ready — Upload Video or Start Camera", "#3b82f6");
-
-  document.getElementById("btn-camera").onclick = startCamera;
-  document.getElementById("file-input").onchange = handleUpload;
-  document.getElementById("btn-start-test").onclick = toggleTest;
-  document.getElementById("btn-reset").onclick = resetSession;
   
   state.video.addEventListener("loadeddata", onVideoReady);
-  
   requestAnimationFrame(masterLoop);
 }
 
-// --- INPUTS ---
-
+// ============================================
+// VIDEO INPUTS
+// ============================================
 function handleUpload(e) {
   const file = e.target.files?.[0];
   if (!file) return;
@@ -183,15 +176,15 @@ function onVideoReady() {
   document.getElementById("btn-start-test").disabled = false;
   
   if (state.video.src) {
-      const p = state.video.play();
-      if (p && typeof p.then === "function") {
-        p.then(() => {
-          setTimeout(() => {
-            if (!state.isTestRunning) state.video.pause();
-            state.video.currentTime = 0;
-          }, 100);
-        }).catch(() => {});
-      }
+    const p = state.video.play();
+    if (p && typeof p.then === "function") {
+      p.then(() => {
+        setTimeout(() => {
+          if (!state.isTestRunning) state.video.pause();
+          state.video.currentTime = 0;
+        }, 100);
+      }).catch(() => {});
+    }
   }
   setStatus("Video Ready — Press Start Test", "#3b82f6");
 }
@@ -205,7 +198,7 @@ async function toggleTest() {
     setStatus("Scanning: Park hand below knee...", "#fbbf24");
     
     if (state.video.paused) {
-        try { await state.video.play(); } catch(e) {}
+      try { await state.video.play(); } catch(e) {}
     }
   } else {
     state.isTestRunning = false;
@@ -216,32 +209,40 @@ async function toggleTest() {
   }
 }
 
-// --- MASTER LOOP ---
-
-function masterLoop(timestamp) {
+// ============================================
+// MASTER LOOP
+// ============================================
+async function masterLoop(timestamp) {
   requestAnimationFrame(masterLoop);
   
-  if (!state.isModelLoaded || !state.video) return;
+  if (!state.isModelLoaded || !state.video || !state.isTestRunning) return;
   
   state.timeMs = timestamp;
   
-  // Draw video frame
+  // Clear and draw video
   state.ctx.clearRect(0, 0, state.canvas.width, state.canvas.height);
   state.ctx.drawImage(state.video, 0, 0, state.canvas.width, state.canvas.height);
   
-  // Detect pose
+  // Detect Pose
   let pose = null;
-  if (state.detector) {
-    const results = await state.detector.estimatePoses(state.canvas);
-    if (results && results.length > 0) {
-      pose = results[0].keypoints;
-      drawSkeleton(pose);  // Your existing draw function
+  if (state.landmarker && state.video.readyState >= 2) {
+    try {
+      const results = state.landmarker.detectForVideo(state.video, timestamp);
+      if (results && results.landmarks && results.landmarks.length > 0) {
+        pose = results.landmarks[0];
+        state.lastPose = pose;
+      }
+    } catch(e) {
+      console.warn("Detection error:", e);
     }
   }
   
-  if (!pose) return;
+  if (!pose) {
+    drawOverlay();
+    return;
+  }
   
-  // ✅ RUN ALL STATE MACHINES
+  // Run State Machines
   runPhysics(pose, state.timeMs);
   
   if (state.testStage === "IDLE") {
@@ -249,43 +250,41 @@ function masterLoop(timestamp) {
   }
   
   if (state.testStage === "RUNNING") {
+    runSnatchLogic(pose);
     checkEndCondition(pose, state.timeMs);
-    // Your existing rep detection logic here
   }
-}
-
-
+  
   drawOverlay();
-  requestAnimationFrame(masterLoop);
 }
 
-// --- LOGIC: START / END ---
-
+// ============================================
+// START/END CONDITIONS
+// ============================================
 function checkStartCondition(pose, timeMs) {
   if (state.testStage !== "IDLE") return;
   
   const lY = pose[CONFIG.LEFT.WRIST]?.y || 0;
   const rY = pose[CONFIG.RIGHT.WRIST]?.y || 0;
-  const activeSide = lY > rY ? "left" : "right";  // Dominant low hand
+  const activeSide = lY > rY ? "left" : "right";
   
   const sideIdx = activeSide === "left" ? CONFIG.LEFT : CONFIG.RIGHT;
   const wrist = pose[sideIdx.WRIST];
-  const head = pose[CONFIG.HEAD_LANDMARK];  // Nose Y
+  const head = pose[CONFIG.HEAD_LANDMARK];
   if (!wrist || !head) return;
   
   const inZone = isWristInFloorZone(pose, activeSide);
-  const headLowering = head.y > state.prevHeadY + 0.02;  // Dip = ready position
-  const hikingDown = state.lastVy > 0.4 && state.lastSpeed > 0.6;  // Pull backswing
+  const headLowering = head.y > state.prevHeadY + 0.02;
+  const hikingDown = state.lastVy > 0.4 && state.lastSpeed > 0.6;
   
   state.prevHeadY = head.y;
   
-  // Park confirm: Floor + dip
+  // Park confirm
   if (inZone && headLowering) {
     state.parkingConfirmed = true;
-    state.armingSide = activeSide;  // Auto-arm
+    state.armingSide = activeSide;
   }
   
-  // Start trigger: Confirmed + hike
+  // Start trigger
   if (state.parkingConfirmed && inZone && hikingDown) {
     startNewSet(state.armingSide);
     state.parkingConfirmed = false;
@@ -293,56 +292,60 @@ function checkStartCondition(pose, timeMs) {
   }
 }
 
-
-
 function checkEndCondition(pose, timeMs) {
   if (state.testStage !== "RUNNING") return;
-  if (!state.session.currentSet || (timeMs - state.session.currentSet.lockedAtMs < CONFIG.RESET_GRACE_MS_AFTER_LOCK)) return;
+  if (!state.session.currentSet) return;
+  
+  const grace = timeMs - state.session.currentSet.lockedAtMs;
+  if (grace < CONFIG.RESET_GRACE_MS_AFTER_LOCK) return;
   
   const sideIdx = state.lockedSide === "left" ? CONFIG.LEFT : CONFIG.RIGHT;
   const wrist = pose[sideIdx.WRIST];
-  const head = pose[CONFIG.HEAD_LANDMARK];  // Nose Y
+  const head = pose[CONFIG.HEAD_LANDMARK];
   if (!wrist || !head) return;
   
-  const inZone = isWristInFloorZone(pose, state.lockedSide);  // Your existing func
-  const headLowering = head.y > state.prevHeadY + 0.02;      // Dip threshold
-  const standingUp = state.lastVy < -0.4 && state.lastSpeed > 0.6;  // Up + moving
+  const inZone = isWristInFloorZone(pose, state.lockedSide);
+  const headLowering = head.y > state.prevHeadY + 0.02;
+  const standingUp = state.lastVy < -0.4 && state.lastSpeed > 0.6;
   
-  state.prevHeadY = head.y;  // Update every frame
+  state.prevHeadY = head.y;
   
-  // Park confirm: Floor zone + head dip (handles slow/quick)
+  // Park confirm
   if (inZone && headLowering) {
     state.parkingConfirmed = true;
   }
   
-  // End trigger: Confirmed park + standing
+  // End trigger
   if (state.parkingConfirmed && inZone && standingUp) {
     endCurrentSet();
     state.parkingConfirmed = false;
-    state.prevHeadY = 0;  // Reset
+    state.prevHeadY = 0;
   }
 }
 
-
-
+// ============================================
+// SET MANAGEMENT
+// ============================================
 function startNewSet(side) {
   state.lockedSide = side;
   state.testStage = "RUNNING";
-  state.lockedAtMs = state.lastLoopMs;
-  state.dwellTimerMs = 0;
+  state.lockedAtMs = state.timeMs;
   
-  // Reset Set Data
+  // Reset tracking
   state.repHistory = [];
   state.currentRepPeak = 0;
   state.overheadHoldCount = 0;
   state.phase = "IDLE";
+  state.lockedCalibration = null;
+  state.prevWrist = null;
   
-  // Create Session
+  // Create session set
   state.session.currentSet = {
     id: state.session.history.length + 1,
     hand: side,
     reps: [],
-    startTime: new Date()
+    startTime: new Date(),
+    lockedAtMs: state.timeMs
   };
 
   updateUIValues(0, 0, "--", "#fff");
@@ -353,59 +356,34 @@ function endCurrentSet() {
   if (state.session.currentSet) {
     state.session.currentSet.endTime = new Date();
     
-    // Calculate Average Velocity for this set (for easy reading in Make/Notion)
     const peaks = state.session.currentSet.reps;
     const avg = peaks.length > 0 ? peaks.reduce((a,b)=>a+b,0)/peaks.length : 0;
     state.session.currentSet.avgVelocity = avg.toFixed(2);
     
-    // Push the finalized set to session history
     state.session.history.push(state.session.currentSet);
   }
   
-  // Reset System State
   state.testStage = "IDLE";
   state.lockedSide = "unknown";
-  state.dwellTimerMs = 0;
   state.session.currentSet = null;
 
   setStatus("Set Saved. Park to start next.", "#3b82f6");
 }
 
-
-// --- PHYSICS ENGINE ---
-
-function isWristInFloorZone(pose, side) {
-  const idx = side === "left" ? CONFIG.LEFT : CONFIG.RIGHT;
-  const wrist = pose[idx.WRIST];
-  const knee = pose[idx.KNEE];
-  
-  if (!wrist || !knee) return false;
-  if (wrist.y < 0 || wrist.y > 1.0) return false;
-  return wrist.y > knee.y; 
-}
-
-function calculatePassiveVelocity(pose, timeMs) {
-  // Track Lowest Hand for IDLE velocity
-  const lY = pose[CONFIG.LEFT.WRIST].y;
-  const rY = pose[CONFIG.RIGHT.WRIST].y;
-  const activeSide = lY > rY ? "left" : "right";
-  
-  const oldSide = state.lockedSide;
-  state.lockedSide = activeSide;
-  runPhysics(pose, timeMs);
-  state.lockedSide = oldSide; 
-}
-
+// ============================================
+// PHYSICS ENGINE
+// ============================================
 function runPhysics(pose, timeMs) {
   const side = state.lockedSide;
-  const idx = side === "left" ? CONFIG.LEFT : CONFIG.RIGHT;
+  if (side === "unknown") return;
   
+  const idx = side === "left" ? CONFIG.LEFT : CONFIG.RIGHT;
   const wrist = pose[idx.WRIST];
   const shoulder = pose[idx.SHOULDER];
   const hip = pose[idx.HIP];
   if (!wrist || !shoulder || !hip) return;
 
-  // Stable Calibration (min 50px guard)
+  // Calibration
   if (!state.lockedCalibration) {
     const torsoPx = Math.abs(shoulder.y - hip.y) * state.canvas.height;
     state.lockedCalibration = Math.max(50, torsoPx / CONFIG.TORSO_METERS);
@@ -429,7 +407,7 @@ function runPhysics(pose, timeMs) {
   let vy = (dyPx / state.lockedCalibration) / dt;
   let speed = Math.hypot(vx, vy);
 
-  // Frame-Rate Normalization (fixes video replay jitter)
+  // Frame normalization
   const TARGET_FPS = 30;
   const frameTimeMs = 1000 / TARGET_FPS;
   const actualFrameTimeMs = timeMs - state.prevWrist.t;
@@ -438,14 +416,14 @@ function runPhysics(pose, timeMs) {
   vy *= timeRatio;
   speed = Math.hypot(vx, vy);
 
-  // Zero Band
+  // Zero band
   if (speed < CONFIG.ZERO_BAND) speed = 0;
 
-  // Heavy Smoothing
+  // Smoothing
   state.smoothedVelocity = CONFIG.SMOOTHING_ALPHA * speed + (1 - CONFIG.SMOOTHING_ALPHA) * state.smoothedVelocity;
   state.smoothedVy = CONFIG.SMOOTHING_ALPHA * vy + (1 - CONFIG.SMOOTHING_ALPHA) * state.smoothedVy;
   
-  // Velocity Ceiling
+  // Ceiling
   state.lastSpeed = Math.min(state.smoothedVelocity, CONFIG.MAX_REALISTIC_VELOCITY);
   state.lastVy = Math.min(Math.max(state.smoothedVy, -CONFIG.MAX_REALISTIC_VELOCITY), CONFIG.MAX_REALISTIC_VELOCITY);
   
@@ -456,164 +434,104 @@ function runPhysics(pose, timeMs) {
   }
 }
 
-  
-  const dt = (timeMs - state.prevWrist.t) / 1000;
-  if (dt < CONFIG.MIN_DT || dt > CONFIG.MAX_DT) {
-    state.prevWrist = { x: wrist.x, y: wrist.y, t: timeMs };
-    return;
-  }
-
-  const dxPx = (wrist.x - state.prevWrist.x) * state.canvas.width;
-  const dyPx = (wrist.y - state.prevWrist.y) * state.canvas.height;
-
-  let vx = (dxPx / state.lockedCalibration) / dt;
-  let vy = (dyPx / state.lockedCalibration) / dt;
-  let speed = Math.hypot(vx, vy);
-
-  // ✅ FRAME-RATE NORMALIZATION (Fixes video playback jitter)
-  const TARGET_FPS = 30;
-  const frameTimeMs = 1000 / TARGET_FPS;
-  const actualFrameTimeMs = timeMs - state.prevWrist.t;
-  const timeRatio = frameTimeMs / actualFrameTimeMs;
-  vx *= timeRatio;
-  vy *= timeRatio;
-  speed = Math.hypot(vx, vy);
-
-  // ZERO BAND
-  if (speed < CONFIG.ZERO_BAND) speed = 0;
-
-  // ✅ HEAVY SMOOTHING
-  state.smoothedVelocity = CONFIG.SMOOTHING_ALPHA * speed + (1 - CONFIG.SMOOTHING_ALPHA) * state.smoothedVelocity;
-  state.smoothedVy = CONFIG.SMOOTHING_ALPHA * vy + (1 - CONFIG.SMOOTHING_ALPHA) * state.smoothedVy;
-  
-  // ✅ VELOCITY CEILING
-  state.lastSpeed = Math.min(state.smoothedVelocity, CONFIG.MAX_REALISTIC_VELOCITY);
-  state.lastVy = Math.min(Math.max(state.smoothedVy, -CONFIG.MAX_REALISTIC_VELOCITY), CONFIG.MAX_REALISTIC_VELOCITY);
-  
-  state.prevWrist = { x: wrist.x, y: wrist.y, t: timeMs };
-  
-  if (state.testStage === "RUNNING") {
-    document.getElementById("val-velocity").textContent = state.lastSpeed.toFixed(2);
-  }
-}
-
-
-// --- REPLACES CURRENT runSnatchLogic() ---
-
-function runSnatchLogic() {
+// ============================================
+// REP DETECTION
+// ============================================
+function runSnatchLogic(pose) {
   const v = state.smoothedVelocity;
   const vy = state.smoothedVy;
-  const pose = state.lastPose;
   
-  // Handlers
   const idx = state.lockedSide === "left" ? CONFIG.LEFT : CONFIG.RIGHT;
   const wrist = pose[idx.WRIST];
   const hip = pose[idx.HIP];
   const shoulder = pose[idx.SHOULDER];
-  const nose = pose[0]; // Nose is always index 0
+  const nose = pose[CONFIG.HEAD_LANDMARK];
 
-  // 1. ZONES
-  // Note: Y is normalized (0=top, 1=bottom). Smaller Y is higher.
   const isBelowHip = wrist.y > hip.y;
   const isAboveShoulder = wrist.y < shoulder.y;
-  const isAboveNose = wrist.y < nose.y; // Strict Height Check
+  const isAboveNose = wrist.y < nose.y;
 
-  // 2. STATE MACHINE
   if (state.phase === "IDLE" || state.phase === "LOCKOUT") {
-    // Reset when bell drops below hip (Hike/Backswing)
     if (isBelowHip) {
       state.phase = "BOTTOM";
       state.overheadHoldCount = 0;
     }
   } 
   else if (state.phase === "BOTTOM") {
-    // Trigger Concentric phase when bell passes hip upward
     if (!isBelowHip) {
       state.phase = "CONCENTRIC";
-      state.currentRepPeak = 0; // Reset peak for this rep
+      state.currentRepPeak = 0;
     }
   } 
   else if (state.phase === "CONCENTRIC") {
-    // A. Track Velocity (ONLY while below shoulder to capture hip power)
-    if (!isAboveShoulder) { 
-        if (v > state.currentRepPeak) state.currentRepPeak = v;
+    if (!isAboveShoulder) {
+      if (v > state.currentRepPeak) state.currentRepPeak = v;
     }
 
-    // B. Check for Lockout
-    // Criteria: Above Nose + Low Vertical Speed + Low Total Speed
     const isStable = Math.abs(vy) < CONFIG.LOCKOUT_VY_CUTOFF && v < CONFIG.LOCKOUT_SPEED_CUTOFF;
     
     if (isAboveNose && isStable) {
-      // Must hold for ~200ms (6 frames @ 30fps)
       state.overheadHoldCount++;
-      if (state.overheadHoldCount >= 2) { // Was 6
+      if (state.overheadHoldCount >= 2) {
         recordRep();
       }
-      }
-    
     }
   }
-
-
+}
 
 function recordRep() {
   state.phase = "LOCKOUT";
   state.overheadHoldCount = 0;
   
-  // Clean Data: Only push the single peak value for this rep
   if (state.session.currentSet) {
-      state.session.currentSet.reps.push(state.currentRepPeak);
+    state.session.currentSet.reps.push(state.currentRepPeak);
   }
   
-  // Local history for display
   state.repHistory.push(state.currentRepPeak);
-  
-  // Update UI
   updateUIValues(state.repHistory.length, state.currentRepPeak);
 }
 
-// --- VISUALS ---
-
-function updateUIValues(reps, peak, drop, dropColor) {
-  document.getElementById("val-reps").textContent = reps;
-  document.getElementById("val-peak").textContent = peak.toFixed(2);
-  const d = document.getElementById("val-drop");
-  d.textContent = drop;
-  if (dropColor) d.style.color = dropColor;
+// ============================================
+// HELPERS
+// ============================================
+function isWristInFloorZone(pose, side) {
+  const idx = side === "left" ? CONFIG.LEFT : CONFIG.RIGHT;
+  const wrist = pose[idx.WRIST];
+  const knee = pose[idx.KNEE];
+  
+  if (!wrist || !knee) return false;
+  return wrist.y > knee.y;
 }
 
 function resetSession() {
-  // Clear Session Data
   state.session = { currentSet: null, history: [] };
   state.repHistory = [];
-  
-  // Reset State Machine
   state.testStage = "IDLE";
   state.lockedSide = "unknown";
   state.armingSide = null;
-  state.dwellTimerMs = 0;
-  
-  // Reset Physics
   state.smoothedVelocity = 0;
   state.smoothedVy = 0;
   state.lastSpeed = 0;
   state.lastVy = 0;
   state.lockedCalibration = null;
   state.prevWrist = null;
-  
-  // Reset Gesture Tracking
   state.parkingConfirmed = false;
   state.prevHeadY = 0;
-  state.gestureState = { phase: null, side: null };
   
-  // Reset UI
-  updateUIValues(0, 0);
+  updateUIValues(0, 0, "--", "#fff");
   setStatus("Session Cleared — Ready", "#3b82f6");
-  
-  console.log("Session Reset Complete");
 }
 
-
+// ============================================
+// UI
+// ============================================
+function updateUIValues(reps, peak, drop = "--", dropColor = "#fff") {
+  document.getElementById("val-reps").textContent = reps;
+  document.getElementById("val-peak").textContent = peak.toFixed(2);
+  const d = document.getElementById("val-drop");
+  d.textContent = drop;
+  d.style.color = dropColor;
+}
 
 function setStatus(text, color) {
   const pill = document.getElementById("status-pill");
@@ -625,38 +543,24 @@ function setStatus(text, color) {
 }
 
 function drawOverlay() {
-  state.ctx.clearRect(0, 0, state.canvas.width, state.canvas.height);
   if (!state.lastPose) return;
   
-  // --- DEBUG OVERLAY (REMOVE IF NEEDED) ---
-  state.ctx.fillStyle = "#fbbf24";
-  state.ctx.font = "14px monospace";
-  state.ctx.fillText(`Timer: ${(state.dwellTimerMs/1000).toFixed(2)}s`, 10, 20);
-  state.ctx.fillText(`Speed: ${state.lastSpeed.toFixed(2)}`, 10, 40);
-  state.ctx.fillText(`Vy: ${state.lastVy.toFixed(2)}`, 10, 60);
-  // ----------------------------------------
-
   const side = state.lockedSide;
 
-  if (state.testStage === "RUNNING") {
+  if (state.testStage === "RUNNING" && side !== "unknown") {
     const idx = side === "left" ? CONFIG.LEFT : CONFIG.RIGHT;
     const wrist = state.lastPose[idx.WRIST];
     drawDot(wrist, true, "#10b981");
     
-    // Draw parking line (green if criteria met)
     const inZone = isWristInFloorZone(state.lastPose, side);
-    const isStill = state.lastSpeed < CONFIG.STILLNESS_THRESHOLD_END;
-    const isNotPulling = state.lastVy > -0.5;
-    const readyToPark = inZone && isStill && isNotPulling;
-    
-    drawParkingLine(state.lastPose, side, readyToPark);
+    drawParkingLine(state.lastPose, side, inZone);
   } else {
-    const lY = state.lastPose[CONFIG.LEFT.WRIST].y;
-    const rY = state.lastPose[CONFIG.RIGHT.WRIST].y;
+    const lY = state.lastPose[CONFIG.LEFT.WRIST]?.y || 0;
+    const rY = state.lastPose[CONFIG.RIGHT.WRIST]?.y || 0;
     const lowest = lY > rY ? "left" : "right";
     
-    const isStill = state.lastSpeed < CONFIG.STILLNESS_THRESHOLD_START;
-    const color = isStill ? "#fbbf24" : "#94a3b8"; 
+    const isStill = state.lastSpeed < 1.5;
+    const color = isStill ? "#fbbf24" : "#94a3b8";
 
     drawDot(state.lastPose[CONFIG.LEFT.WRIST], lowest==="left", color);
     drawDot(state.lastPose[CONFIG.RIGHT.WRIST], lowest==="right", color);
@@ -689,6 +593,10 @@ function drawDot(landmark, big, color) {
   state.ctx.arc(x, y, big ? 8 : 5, 0, 2*Math.PI);
   state.ctx.fill();
 }
+
+// ============================================
+// EXPORT
+// ============================================
 async function exportToMake() {
   const history = state.session.history;
   
@@ -697,15 +605,12 @@ async function exportToMake() {
     return;
   }
 
-  // 1. Calculate Session-Level Totals
   const totalReps = history.reduce((sum, set) => sum + set.reps.length, 0);
-  // Avoid division by zero
   const totalAvg = history.length > 0 ? 
-      (history.reduce((sum, set) => sum + parseFloat(set.avgVelocity), 0) / history.length) : 0;
+    (history.reduce((sum, set) => sum + parseFloat(set.avgVelocity), 0) / history.length) : 0;
 
-  // 2. Construct the Make.com Payload
   const payload = {
-    athlete_id: "dad_ready_user", // You can make this dynamic later
+    athlete_id: "dad_ready_user",
     session_date: new Date().toISOString(),
     total_reps: totalReps,
     session_avg_velocity: totalAvg.toFixed(2),
@@ -714,43 +619,32 @@ async function exportToMake() {
       hand: set.hand,
       rep_count: set.reps.length,
       peak_velocity_avg: parseFloat(set.avgVelocity),
-      raw_peaks: set.reps // Array of peak velocities [1.2, 1.4, ...]
+      raw_peaks: set.reps
     }))
   };
 
-  // 3. Log to Console (Debugging)
-  console.log("--------------------------------");
-  console.log("EXPORTING TO MAKE (PAYLOAD):");
-  console.log(JSON.stringify(payload, null, 2));
-  console.log("--------------------------------");
-
+  console.log("EXPORTING TO MAKE:", JSON.stringify(payload, null, 2));
   setStatus("Exporting to Make...", "#8b5cf6");
 
-  // 4. Send to Webhook (Uncomment when you have the URL)
-  /*
   try {
     const response = await fetch(CONFIG.MAKE_WEBHOOK_URL, {
-       method: "POST",
-       headers: { "Content-Type": "application/json" },
-       body: JSON.stringify(payload)
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload)
     });
     
     if(response.ok) {
-        setStatus("Success! Session Saved.", "#10b981");
-        // Optional: resetSession(); // Clear data after save
+      setStatus("Success! Session Saved.", "#10b981");
     } else {
-        setStatus("Error: Make.com rejected payload.", "#ef4444");
+      setStatus("Error: Make.com rejected payload.", "#ef4444");
     }
   } catch(e) {
-      console.error("Network Error:", e);
-      setStatus("Network Error (Check Console)", "#ef4444");
+    console.error("Network Error:", e);
+    setStatus("Network Error (Check Console)", "#ef4444");
   }
-  */
-
-
 }
 
-
+// ============================================
+// START
+// ============================================
 initializeApp();
-
-
