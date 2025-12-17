@@ -45,7 +45,7 @@ LOCKOUT_SPEED_CUTOFF: 1.0, // Was 1.40 (Must be very still overhead)
   STILLNESS_THRESHOLD_END: 0.8,   // End: Strict (Must be stopped)
   RESET_GRACE_MS_AFTER_LOCK: 1500, // Buffer before you can end
 
-   MAKE_WEBHOOK_URL: "https://hook.us2.make.com/iokrllng8f85f6bsyi903oua0fj4w42a"
+   MAKE_WEBHOOK_URL: "https://hook.us2.make.com/bxyeuukaw4v71k32vx26jwiqbumgi19c"
 };
 
 let state = {
