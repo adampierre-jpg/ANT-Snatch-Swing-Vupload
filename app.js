@@ -483,15 +483,28 @@ function updateUIValues(reps, peak, drop, dropColor) {
 }
 
 function resetSession() {
+  // 1. Clear Session Data
   state.session = { currentSet: null, history: [] };
   state.repHistory = [];
-  state.baseline = 0;
+  
+  // 2. Reset State Machine
   state.testStage = "IDLE";
   state.lockedSide = "unknown";
+  state.armingSide = null;
   state.dwellTimerMs = 0;
-  updateUIValues(0, 0, "--", "#fff");
-  setStatus("Reset Complete", "#3b82f6");
+  
+  // 3. Reset Physics (Crucial to stop "phantom" movement)
+  state.smoothedVelocity = 0;
+  state.smoothedVy = 0;
+  state.lastSpeed = 0;
+  
+  // 4. Reset UI
+  updateUIValues(0, 0);
+  setStatus("Session Cleared — Ready", "#3b82f6");
+  
+  console.log("Session Reset Complete");
 }
+
 
 function setStatus(text, color) {
   const pill = document.getElementById("status-pill");
