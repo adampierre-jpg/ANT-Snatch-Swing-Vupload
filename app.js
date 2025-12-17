@@ -25,10 +25,10 @@ const CONFIG = {
   TORSO_METERS: 0.5,
   ZERO_BAND: 0.3, // Velocity < 0.3 is forced to 0.0
 
-  // Snatch Rep Logic
-  LOCKOUT_VY_CUTOFF: 0.40,
-  LOCKOUT_SPEED_CUTOFF: 1.40,
-  OVERHEAD_HOLD_FRAMES: 2,
+  // Update these in CONFIG:
+LOCKOUT_VY_CUTOFF: 0.35,  // Was 0.40 (Stricter vertical stop)
+LOCKOUT_SPEED_CUTOFF: 1.0, // Was 1.40 (Must be very still overhead)
+
 
   // Drop Feedback
   BASELINE_REPS: 3,
