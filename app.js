@@ -631,13 +631,14 @@ async function exportToMake() {
       setStatus("Network Error (Check Console)", "#ef4444");
   }
   */
+const saveBtn = document.getElementById("btn-save");
+if (saveBtn) {
+    saveBtn.onclick = exportToMake;
+
 }
 
 initializeApp();
 
 // Inside initializeApp():
-const saveBtn = document.getElementById("btn-save");
-if (saveBtn) {
-    saveBtn.onclick = exportToMake;
-}
+
 
