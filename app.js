@@ -484,9 +484,35 @@ function recordRep() {
   }
   
   state.repHistory.push(state.currentRepPeak);
-  updateUIValues(state.repHistory.length, state.currentRepPeak);
   
-  if (CONFIG.DEBUG_MODE) console.log(`📊 REP RECORDED: ${state.currentRepPeak.toFixed(2)} m/s`);
+  // Calculate baseline (average of first 3 reps)
+  if (state.repHistory.length === CONFIG.BASELINE_REPS) {
+    state.baseline = state.repHistory.reduce((a,b) => a+b, 0) / CONFIG.BASELINE_REPS;
+  }
+  
+  // Calculate drop-off percentage
+  let dropPct = "--";
+  let dropColor = "#fff";
+  
+  if (state.baseline > 0 && state.repHistory.length > CONFIG.BASELINE_REPS) {
+    const drop = ((state.baseline - state.currentRepPeak) / state.baseline) * 100;
+    dropPct = drop.toFixed(1) + "%";
+    
+    // Color coding
+    if (drop < CONFIG.DROP_WARN) {
+      dropColor = "#10b981"; // Green - good
+    } else if (drop < CONFIG.DROP_FAIL) {
+      dropColor = "#fbbf24"; // Yellow - warning
+    } else {
+      dropColor = "#ef4444"; // Red - fatigue
+    }
+  }
+  
+  updateUIValues(state.repHistory.length, state.currentRepPeak, dropPct, dropColor);
+  
+  if (CONFIG.DEBUG_MODE) {
+    console.log(`📊 REP #${state.repHistory.length}: ${state.currentRepPeak.toFixed(2)} m/s | Drop: ${dropPct}`);
+  }
 }
 
 // ============================================
@@ -524,10 +550,17 @@ function resetSession() {
 // ============================================
 // UI
 // ============================================
-function updateUIValues(reps, peak) {
+function updateUIValues(reps, peak, drop = "--", dropColor = "#fff") {
   document.getElementById("val-reps").textContent = reps;
   document.getElementById("val-peak").textContent = peak.toFixed(2);
+  
+  const dropEl = document.getElementById("val-drop");
+  if (dropEl) {
+    dropEl.textContent = drop;
+    dropEl.style.color = dropColor;
+  }
 }
+
 
 function setStatus(text, color) {
   const pill = document.getElementById("status-pill");
