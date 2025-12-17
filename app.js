@@ -435,19 +435,10 @@ function runSnatchLogic() {
     if (isAboveNose && isStable) {
       // Must hold for ~200ms (6 frames @ 30fps)
       state.overheadHoldCount++;
-      if (state.overheadHoldCount >= 6) { // Was 2
+      if (state.overheadHoldCount >= 2) { // Was 2
         recordRep();
       }
-    } else {
-      // If they drop or lose stability, reset count
-      state.overheadHoldCount = 0;
-      
-      // If they drop all the way down without locking out, fail the rep
-      if (isBelowHip) {
-          state.phase = "BOTTOM";
-          state.currentRepPeak = 0; // Discard partial data
-      }
-    }
+    } 
   }
 }
 
