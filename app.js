@@ -305,9 +305,17 @@ function startNewSet(side) {
 function endCurrentSet() {
   if (state.session.currentSet) {
     state.session.currentSet.endTime = new Date();
+    
+    // Calculate Average Velocity for this set (for easy reading in Make/Notion)
+    const peaks = state.session.currentSet.reps;
+    const avg = peaks.length > 0 ? peaks.reduce((a,b)=>a+b,0)/peaks.length : 0;
+    state.session.currentSet.avgVelocity = avg.toFixed(2);
+    
+    // Push the finalized set to session history
     state.session.history.push(state.session.currentSet);
   }
   
+  // Reset System State
   state.testStage = "IDLE";
   state.lockedSide = "unknown";
   state.dwellTimerMs = 0;
@@ -315,6 +323,7 @@ function endCurrentSet() {
 
   setStatus("Set Saved. Park to start next.", "#3b82f6");
 }
+
 
 // --- PHYSICS ENGINE ---
 
@@ -452,30 +461,21 @@ function runSnatchLogic() {
 }
 
 
+
 function recordRep() {
   state.phase = "LOCKOUT";
   state.overheadHoldCount = 0;
   
-  if (state.session.currentSet) state.session.currentSet.reps.push(state.currentRepPeak);
-  
-  state.repHistory.push(state.currentRepPeak);
-  const repCount = state.repHistory.length;
-  
-  let dropText = "--";
-  let dropColor = "#10b981";
-  
-  if (repCount <= CONFIG.BASELINE_REPS) {
-    state.baseline = state.repHistory.reduce((a,b)=>a+b,0) / repCount;
-    dropText = "CALC";
-  } else {
-    const drop = (state.baseline - state.currentRepPeak) / state.baseline;
-    const dropPct = (drop * 100).toFixed(1);
-    dropText = `-${dropPct}%`;
-    if (drop * 100 >= CONFIG.DROP_FAIL) dropColor = "#ef4444";
-    else if (drop * 100 >= CONFIG.DROP_WARN) dropColor = "#fbbf24";
+  // Clean Data: Only push the single peak value for this rep
+  if (state.session.currentSet) {
+      state.session.currentSet.reps.push(state.currentRepPeak);
   }
-
-  updateUIValues(repCount, state.currentRepPeak, dropText, dropColor);
+  
+  // Local history for display
+  state.repHistory.push(state.currentRepPeak);
+  
+  // Update UI
+  updateUIValues(state.repHistory.length, state.currentRepPeak);
 }
 
 // --- VISUALS ---
@@ -572,6 +572,64 @@ function drawDot(landmark, big, color) {
   state.ctx.fillStyle = color;
   state.ctx.arc(x, y, big ? 8 : 5, 0, 2*Math.PI);
   state.ctx.fill();
+}
+async function exportToMake() {
+  const history = state.session.history;
+  
+  if (!history.length) {
+    alert("No completed sets to export.");
+    return;
+  }
+
+  // 1. Calculate Session-Level Totals
+  const totalReps = history.reduce((sum, set) => sum + set.reps.length, 0);
+  // Avoid division by zero
+  const totalAvg = history.length > 0 ? 
+      (history.reduce((sum, set) => sum + parseFloat(set.avgVelocity), 0) / history.length) : 0;
+
+  // 2. Construct the Make.com Payload
+  const payload = {
+    athlete_id: "dad_ready_user", // You can make this dynamic later
+    session_date: new Date().toISOString(),
+    total_reps: totalReps,
+    session_avg_velocity: totalAvg.toFixed(2),
+    sets: history.map((set, index) => ({
+      set_order: index + 1,
+      hand: set.hand,
+      rep_count: set.reps.length,
+      peak_velocity_avg: parseFloat(set.avgVelocity),
+      raw_peaks: set.reps // Array of peak velocities [1.2, 1.4, ...]
+    }))
+  };
+
+  // 3. Log to Console (Debugging)
+  console.log("--------------------------------");
+  console.log("EXPORTING TO MAKE (PAYLOAD):");
+  console.log(JSON.stringify(payload, null, 2));
+  console.log("--------------------------------");
+
+  setStatus("Exporting to Make...", "#8b5cf6");
+
+  // 4. Send to Webhook (Uncomment when you have the URL)
+  /*
+  try {
+    const response = await fetch(CONFIG.MAKE_WEBHOOK_URL, {
+       method: "POST",
+       headers: { "Content-Type": "application/json" },
+       body: JSON.stringify(payload)
+    });
+    
+    if(response.ok) {
+        setStatus("Success! Session Saved.", "#10b981");
+        // Optional: resetSession(); // Clear data after save
+    } else {
+        setStatus("Error: Make.com rejected payload.", "#ef4444");
+    }
+  } catch(e) {
+      console.error("Network Error:", e);
+      setStatus("Network Error (Check Console)", "#ef4444");
+  }
+  */
 }
 
 initializeApp();
