@@ -181,6 +181,11 @@ function handleUpload(e) {
 
   resetSession();
   setStatus("Loading Video...", "#fbbf24");
+// Reset video to beginning
+if (state.video && state.video.src) {
+  state.video.pause();
+  state.video.currentTime = 0;
+}
 
   state.video.srcObject = null;
   state.video.src = URL.createObjectURL(file);
