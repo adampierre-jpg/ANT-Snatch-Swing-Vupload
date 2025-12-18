@@ -1,14 +1,14 @@
 /**
- * Version 3.4 --- MOVEMENT AUTO-DETECTION ENABLED
- * - Added: Multi-movement detection (Swing, Clean, Snatch)
- * - Added: Configuration detection (Single, Two-hands, Double bells)
- * - Preserves: All v3.3 snatch tracking functionality
+ * Version 3.4 CORRECTED - Movement Detection Using Existing State Machine
+ * - Uses proven snatch detection logic as foundation
+ * - Adds movement classification based on ACTUAL lockout criteria
+ * - No parallel tracking - uses existing phase transitions
  */
 
 import { PoseLandmarker, FilesetResolver } from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/vision_bundle.mjs";
 
 // ============================================
-// CONFIG (Version 3.4 - Movement Detection Added)
+// CONFIG (Version 3.4 - Corrected)
 // ============================================
 
 const CONFIG = {
@@ -53,16 +53,23 @@ const CONFIG = {
   MIN_DET_CONF: 0.5,
   MIN_TRACK_CONF: 0.5,
 
-  // ✅ NEW: MOVEMENT DETECTION THRESHOLDS
-  DETECTION: {
-    WRIST_PROXIMITY_THRESHOLD: 0.15,    // Two hands on one bell
-    DOUBLE_BELL_SPACING: 0.25,          // Double kettlebells
-    ACTIVE_VELOCITY_THRESHOLD: 0.8,     // Active movement
-    INACTIVE_VELOCITY_THRESHOLD: 0.3,   // Parked/inactive
-    SWING_HEIGHT_THRESHOLD: 0.08,       // Below shoulder + threshold = swing
-    RACK_HEIGHT_THRESHOLD: 0.08,        // Shoulder ± threshold = clean
-    OVERHEAD_HEIGHT_THRESHOLD: 0.1,     // Well above shoulder = snatch
-    RACK_HORIZONTAL_PROXIMITY: 0.15     // Distance from torso for clean
+  // ✅ MOVEMENT CLASSIFICATION CRITERIA (Based on Proven Logic)
+  MOVEMENT: {
+    // Snatch: Must lock out OVERHEAD (existing logic already checks this)
+    SNATCH_MIN_HEIGHT_ABOVE_SHOULDER: 0.05,  // Wrist clearly above shoulder
+
+    // Clean: Locks at RACK position (chest/shoulder height, close to torso)
+    CLEAN_RACK_HEIGHT_MIN: -0.1,  // Below shoulder is OK
+    CLEAN_RACK_HEIGHT_MAX: 0.15,  // Above shoulder is OK (rack range)
+    CLEAN_HORIZONTAL_PROXIMITY: 0.18,  // Must be close to torso centerline
+
+    // Swing: Locks at SHOULDER height or below (doesn't go overhead)
+    SWING_MAX_HEIGHT_ABOVE_SHOULDER: 0.05,  // Just at or below shoulder
+    SWING_MIN_HEIGHT_ABOVE_HIP: 0.1,  // Must go above hip (not a deadlift)
+
+    // Configuration detection (only check when actually needed)
+    TWO_HAND_PROXIMITY: 0.18,  // Both hands close together on one bell
+    DOUBLE_BELL_MIN_SPACING: 0.25  // Both hands wide apart = two bells
   },
 
   // EXPORT
@@ -73,7 +80,7 @@ const CONFIG = {
 };
 
 // ============================================
-// STATE (Extended for Movement Detection)
+// STATE (Minimal additions to existing state)
 // ============================================
 
 let state = {
@@ -88,12 +95,12 @@ let state = {
   timeMs: 0,
   lastPose: null,
 
-  // Hand Tracking
+  // Hand Tracking (EXISTING - already works)
   activeTrackingSide: "left",
   lockedSide: "unknown",
   armingSide: null,
 
-  // Physics (SHARED - used for active hand)
+  // Physics (EXISTING - already works)
   prevWrist: null,
   lockedCalibration: null,
   smoothedVelocity: 0,
@@ -105,7 +112,7 @@ let state = {
   parkingConfirmed: false,
   prevHeadY: 0,
 
-  // Rep Logic
+  // Rep Logic (EXISTING - already works)
   phase: "IDLE",
   currentRepPeak: 0,
   overheadHoldCount: 0,
@@ -116,22 +123,16 @@ let state = {
   repHistory: [],
   baseline: 0,
 
-  // ✅ NEW: Movement Detection State
-  movementDetection: {
-    leftWristVelocity: 0,
-    rightWristVelocity: 0,
-    leftPrevWrist: null,
-    rightPrevWrist: null,
-    wristSpacing: 0,
-    detectedMovement: 'UNKNOWN',
-    detectedConfig: 'UNKNOWN',
-    detectedHands: 'none',
-    movementHistory: []
-  }
+  // ✅ NEW: Track peak position during rep (for classification)
+  currentRepPeakWristY: 1.0,  // Normalized Y position at lockout
+  currentRepPeakWristX: 0.5,  // Normalized X position at lockout
+
+  // ✅ NEW: Movement history for display
+  movementHistory: []
 };
 
 // ============================================
-// INITIALIZATION
+// INITIALIZATION (UNCHANGED)
 // ============================================
 
 async function initializeApp() {
@@ -171,7 +172,7 @@ async function initializeApp() {
 }
 
 // ============================================
-// VIDEO INPUTS
+// VIDEO INPUTS (UNCHANGED)
 // ============================================
 
 function handleUpload(e) {
@@ -230,7 +231,7 @@ async function toggleTest() {
     document.getElementById("btn-reset").disabled = false;
     setStatus("Scanning: Park hand below knee...", "#fbbf24");
 
-    // ✅ NEW: Reset movement detection UI
+    // ✅ Reset movement display
     resetMovementDisplay();
 
     if (state.video.paused) {
@@ -246,7 +247,7 @@ async function toggleTest() {
 }
 
 // ============================================
-// MASTER LOOP (Enhanced with Movement Detection)
+// MASTER LOOP (UNCHANGED - uses existing logic)
 // ============================================
 
 async function masterLoop(timestamp) {
@@ -278,24 +279,16 @@ async function masterLoop(timestamp) {
     return;
   }
 
-  // ✅ ALWAYS RUN PHYSICS (even in IDLE)
+  // ✅ ALWAYS RUN PHYSICS (existing proven logic)
   if (state.isTestRunning) {
     runPhysics(pose, state.timeMs);
-
-    // ✅ NEW: Run dual-wrist tracking in parallel
-    runDualWristPhysics(pose, state.timeMs);
-
-    // ✅ NEW: Update configuration detection (only after calibration)
-    if (state.lockedCalibration) {
-      detectMovementConfiguration();
-    }
 
     if (state.testStage === "IDLE") {
       checkStartCondition(pose, state.timeMs);
     }
 
     if (state.testStage === "RUNNING") {
-      runSnatchLogic(pose);
+      runSnatchLogic(pose);  // ✅ This is your proven state machine
       checkEndCondition(pose, state.timeMs);
     }
   }
@@ -304,7 +297,7 @@ async function masterLoop(timestamp) {
 }
 
 // ============================================
-// START/END CONDITIONS
+// START/END CONDITIONS (UNCHANGED)
 // ============================================
 
 function checkStartCondition(pose, timeMs) {
@@ -318,18 +311,15 @@ function checkStartCondition(pose, timeMs) {
   const rY = rWrist.y;
   const activeSide = lY > rY ? "left" : "right";
 
-  // Update tracking side
   state.activeTrackingSide = activeSide;
 
   const inZone = isWristInFloorZone(pose, activeSide);
   const hikingDown = state.lastVy > 0.3 && state.lastSpeed > 0.5;
 
-  // ✅ DEBUG LOG
   if (CONFIG.DEBUG_MODE && inZone) {
     console.log(`[START] Side:${activeSide} | Zone:${inZone} | Hike:${hikingDown} | Vy:${state.lastVy.toFixed(2)} | Speed:${state.lastSpeed.toFixed(2)}`);
   }
 
-  // ✅ SIMPLE: Just zone + hike direction
   if (inZone && hikingDown) {
     console.log(`🚀 STARTING SET: ${activeSide}`);
     startNewSet(activeSide);
@@ -350,12 +340,10 @@ function checkEndCondition(pose, timeMs) {
   const inZone = isWristInFloorZone(pose, state.lockedSide);
   const standingUp = state.lastVy < -0.3 && state.lastSpeed > 0.5;
 
-  // ✅ DEBUG LOG
   if (CONFIG.DEBUG_MODE && inZone) {
     console.log(`[END] Zone:${inZone} | StandUp:${standingUp} | Vy:${state.lastVy.toFixed(2)} | Speed:${state.lastSpeed.toFixed(2)}`);
   }
 
-  // ✅ SIMPLE: Just zone + upward direction
   if (inZone && standingUp) {
     console.log(`🛑 ENDING SET`);
     endCurrentSet();
@@ -363,7 +351,7 @@ function checkEndCondition(pose, timeMs) {
 }
 
 // ============================================
-// SET MANAGEMENT
+// SET MANAGEMENT (UNCHANGED)
 // ============================================
 
 function startNewSet(side) {
@@ -371,16 +359,13 @@ function startNewSet(side) {
   state.testStage = "RUNNING";
   state.lockedAtMs = state.timeMs;
 
-  // Reset metrics for the new set
   state.repHistory = [];
   state.currentRepPeak = 0;
   state.overheadHoldCount = 0;
   state.baseline = 0;
 
-  // Pre-prime the phase to BOTTOM
   state.phase = "BOTTOM";
 
-  // Initialize the session object for export
   state.session.currentSet = {
     id: state.session.history.length + 1,
     hand: side,
@@ -389,7 +374,6 @@ function startNewSet(side) {
     lockedAtMs: state.timeMs
   };
 
-  // Update UI
   updateUIValues(0, 0, "--", "#fff");
   setStatus(`LOCKED: ${side.toUpperCase()}`, "#10b981");
 
@@ -401,7 +385,6 @@ function endCurrentSet() {
     state.session.currentSet.endTime = new Date();
     const peaks = state.session.currentSet.reps;
 
-    // ✅ BACKWARD COMPATIBLE: Handle both number and object formats
     const velocities = peaks.map(rep => typeof rep === 'number' ? rep : rep.velocity);
     const avg = velocities.length > 0 ? velocities.reduce((a,b)=>a+b,0)/velocities.length : 0;
 
@@ -418,12 +401,10 @@ function endCurrentSet() {
 }
 
 // ============================================
-// PHYSICS ENGINE (Original - Unchanged)
+// PHYSICS ENGINE (UNCHANGED - Your proven code)
 // ============================================
 
 function runPhysics(pose, timeMs) {
-  // IN IDLE: Track the lower hand
-  // IN RUNNING: Track the locked side
   const side = state.testStage === "IDLE" ? state.activeTrackingSide : state.lockedSide;
   if (!side || side === "unknown") return;
 
@@ -433,7 +414,6 @@ function runPhysics(pose, timeMs) {
   const hip = pose[idx.HIP];
   if (!wrist || !shoulder || !hip) return;
 
-  // Calibration
   if (!state.lockedCalibration) {
     const torsoPx = Math.abs(shoulder.y - hip.y) * state.canvas.height;
     state.lockedCalibration = Math.max(50, torsoPx / CONFIG.TORSO_METERS);
@@ -457,7 +437,6 @@ function runPhysics(pose, timeMs) {
   let vy = (dyPx / state.lockedCalibration) / dt;
   let speed = Math.hypot(vx, vy);
 
-  // Frame normalization
   const TARGET_FPS = 30;
   const frameTimeMs = 1000 / TARGET_FPS;
   const actualFrameTimeMs = timeMs - state.prevWrist.t;
@@ -466,201 +445,23 @@ function runPhysics(pose, timeMs) {
   vy *= timeRatio;
   speed = Math.hypot(vx, vy);
 
-  // Zero band
   if (speed < CONFIG.ZERO_BAND) speed = 0;
 
-  // Smoothing
   state.smoothedVelocity = CONFIG.SMOOTHING_ALPHA * speed + (1 - CONFIG.SMOOTHING_ALPHA) * state.smoothedVelocity;
   state.smoothedVy = CONFIG.SMOOTHING_ALPHA * vy + (1 - CONFIG.SMOOTHING_ALPHA) * state.smoothedVy;
 
-  // Ceiling
   state.lastSpeed = Math.min(state.smoothedVelocity, CONFIG.MAX_REALISTIC_VELOCITY);
   state.lastVy = Math.min(Math.max(state.smoothedVy, -CONFIG.MAX_REALISTIC_VELOCITY), CONFIG.MAX_REALISTIC_VELOCITY);
 
   state.prevWrist = { x: wrist.x, y: wrist.y, t: timeMs };
 
-  // Update UI
   if (state.testStage === "RUNNING") {
     document.getElementById("val-velocity").textContent = state.lastSpeed.toFixed(2);
   }
 }
 
 // ============================================
-// ✅ NEW: DUAL-WRIST PHYSICS (Parallel Tracking)
-// ============================================
-
-function runDualWristPhysics(pose, timeMs) {
-  if (state.testStage !== "IDLE" && state.testStage !== "RUNNING") return;
-
-  const lWrist = pose[CONFIG.LEFT.WRIST];
-  const rWrist = pose[CONFIG.RIGHT.WRIST];
-  const lShoulder = pose[CONFIG.LEFT.SHOULDER];
-  const rShoulder = pose[CONFIG.RIGHT.SHOULDER];
-  const lHip = pose[CONFIG.LEFT.HIP];
-  const rHip = pose[CONFIG.RIGHT.HIP];
-
-  if (!lWrist || !rWrist || !lShoulder || !rShoulder || !lHip || !rHip) return;
-
-  // Use existing calibration from main physics engine
-  if (!state.lockedCalibration) return;
-
-  // Track LEFT wrist velocity
-  if (!state.movementDetection.leftPrevWrist) {
-    state.movementDetection.leftPrevWrist = { x: lWrist.x, y: lWrist.y, t: timeMs };
-  } else {
-    const dt = (timeMs - state.movementDetection.leftPrevWrist.t) / 1000;
-    if (dt >= CONFIG.MIN_DT && dt <= CONFIG.MAX_DT) {
-      const dxPx = (lWrist.x - state.movementDetection.leftPrevWrist.x) * state.canvas.width;
-      const dyPx = (lWrist.y - state.movementDetection.leftPrevWrist.y) * state.canvas.height;
-      let vx = (dxPx / state.lockedCalibration) / dt;
-      let vy = (dyPx / state.lockedCalibration) / dt;
-
-      // FPS normalization
-      const TARGET_FPS = 30;
-      const frameTimeMs = 1000 / TARGET_FPS;
-      const actualFrameTimeMs = timeMs - state.movementDetection.leftPrevWrist.t;
-      const timeRatio = frameTimeMs / actualFrameTimeMs;
-      vx *= timeRatio;
-      vy *= timeRatio;
-
-      let speed = Math.hypot(vx, vy);
-      if (speed < CONFIG.ZERO_BAND) speed = 0;
-
-      // Light smoothing for detection
-      state.movementDetection.leftWristVelocity = 0.3 * speed + 0.7 * state.movementDetection.leftWristVelocity;
-    }
-    state.movementDetection.leftPrevWrist = { x: lWrist.x, y: lWrist.y, t: timeMs };
-  }
-
-  // Track RIGHT wrist velocity
-  if (!state.movementDetection.rightPrevWrist) {
-    state.movementDetection.rightPrevWrist = { x: rWrist.x, y: rWrist.y, t: timeMs };
-  } else {
-    const dt = (timeMs - state.movementDetection.rightPrevWrist.t) / 1000;
-    if (dt >= CONFIG.MIN_DT && dt <= CONFIG.MAX_DT) {
-      const dxPx = (rWrist.x - state.movementDetection.rightPrevWrist.x) * state.canvas.width;
-      const dyPx = (rWrist.y - state.movementDetection.rightPrevWrist.y) * state.canvas.height;
-      let vx = (dxPx / state.lockedCalibration) / dt;
-      let vy = (dyPx / state.lockedCalibration) / dt;
-
-      const TARGET_FPS = 30;
-      const frameTimeMs = 1000 / TARGET_FPS;
-      const actualFrameTimeMs = timeMs - state.movementDetection.rightPrevWrist.t;
-      const timeRatio = frameTimeMs / actualFrameTimeMs;
-      vx *= timeRatio;
-      vy *= timeRatio;
-
-      let speed = Math.hypot(vx, vy);
-      if (speed < CONFIG.ZERO_BAND) speed = 0;
-
-      state.movementDetection.rightWristVelocity = 0.3 * speed + 0.7 * state.movementDetection.rightWristVelocity;
-    }
-    state.movementDetection.rightPrevWrist = { x: rWrist.x, y: rWrist.y, t: timeMs };
-  }
-
-  // Calculate wrist spacing (normalized 0-1)
-  state.movementDetection.wristSpacing = Math.abs(lWrist.x - rWrist.x);
-}
-
-// ============================================
-// ✅ NEW: MOVEMENT CONFIGURATION DETECTION
-// ============================================
-
-function detectMovementConfiguration() {
-  const lVel = state.movementDetection.leftWristVelocity;
-  const rVel = state.movementDetection.rightWristVelocity;
-  const spacing = state.movementDetection.wristSpacing;
-
-  const leftActive = lVel > CONFIG.DETECTION.ACTIVE_VELOCITY_THRESHOLD;
-  const rightActive = rVel > CONFIG.DETECTION.ACTIVE_VELOCITY_THRESHOLD;
-
-  let config = 'UNKNOWN';
-  let hands = 'none';
-
-  // Both wrists moving
-  if (leftActive && rightActive) {
-    if (spacing < CONFIG.DETECTION.WRIST_PROXIMITY_THRESHOLD) {
-      config = 'TWO_HANDS_ONE_BELL';
-      hands = 'both';
-    } else if (spacing > CONFIG.DETECTION.DOUBLE_BELL_SPACING) {
-      config = 'DOUBLE_BELLS';
-      hands = 'both';
-    }
-  }
-  // Only left moving
-  else if (leftActive && !rightActive) {
-    config = 'SINGLE_BELL';
-    hands = 'left';
-  }
-  // Only right moving
-  else if (rightActive && !leftActive) {
-    config = 'SINGLE_BELL';
-    hands = 'right';
-  }
-
-  state.movementDetection.detectedConfig = config;
-  state.movementDetection.detectedHands = hands;
-
-  return { config, hands };
-}
-
-// ============================================
-// ✅ NEW: MOVEMENT TYPE CLASSIFICATION
-// ============================================
-
-function classifyMovementAtLockout() {
-  if (!state.lastPose) return 'UNKNOWN';
-
-  const idx = state.lockedSide === "left" ? CONFIG.LEFT : CONFIG.RIGHT;
-  const wrist = state.lastPose[idx.WRIST];
-  const shoulder = state.lastPose[idx.SHOULDER];
-  const hip = state.lastPose[idx.HIP];
-
-  if (!wrist || !shoulder || !hip) return 'UNKNOWN';
-
-  const config = state.movementDetection.detectedConfig;
-  const hands = state.movementDetection.detectedHands;
-
-  // Determine movement type based on peak height
-  let movementType = 'UNKNOWN';
-
-  // Check peak position during lockout
-  const isOverhead = wrist.y < (shoulder.y - CONFIG.DETECTION.OVERHEAD_HEIGHT_THRESHOLD);
-  const isRackZone = wrist.y >= (shoulder.y - CONFIG.DETECTION.RACK_HEIGHT_THRESHOLD) && 
-                      wrist.y < (shoulder.y + CONFIG.DETECTION.RACK_HEIGHT_THRESHOLD);
-  const isSwingZone = wrist.y >= (shoulder.y + CONFIG.DETECTION.SWING_HEIGHT_THRESHOLD);
-
-  // Classify
-  if (isOverhead) {
-    movementType = 'SNATCH';
-  } else if (isRackZone) {
-    // Check horizontal proximity to torso (clean has bell close to body)
-    const torsoCenter = (state.lastPose[CONFIG.LEFT.SHOULDER].x + state.lastPose[CONFIG.RIGHT.SHOULDER].x) / 2;
-    const horizontalDist = Math.abs(wrist.x - torsoCenter);
-
-    if (horizontalDist < CONFIG.DETECTION.RACK_HORIZONTAL_PROXIMITY) {
-      movementType = 'CLEAN';
-    } else {
-      movementType = 'SWING'; // Swing finishing at shoulder height
-    }
-  } else if (isSwingZone) {
-    movementType = 'SWING';
-  }
-
-  // Build full classification
-  if (config === 'SINGLE_BELL') {
-    return `${movementType}_SINGLE_${hands.toUpperCase()}`;
-  } else if (config === 'TWO_HANDS_ONE_BELL') {
-    return `${movementType}_TWO_HANDS`;
-  } else if (config === 'DOUBLE_BELLS') {
-    return `${movementType}_DOUBLE`;
-  }
-
-  return `${movementType}_UNKNOWN_CONFIG`;
-}
-
-// ============================================
-// REP DETECTION (Enhanced with Movement Classification)
+// REP DETECTION (Enhanced to track peak position)
 // ============================================
 
 function runSnatchLogic(pose) {
@@ -673,22 +474,24 @@ function runSnatchLogic(pose) {
 
   if (!wrist || !hip || !shoulder) return;
 
-  // Logic Boundaries
   const isBelowHip = wrist.y > (hip.y - 0.05);
   const isAboveShoulder = wrist.y < shoulder.y;
 
-  // --- STATE MACHINE ---
+  // --- STATE MACHINE (YOUR PROVEN LOGIC) ---
 
-  // A. RESET: If we are in LOCKOUT or IDLE, we must drop below hip to start next rep.
+  // A. RESET
   if (state.phase === "IDLE" || state.phase === "LOCKOUT") {
     if (isBelowHip) {
       state.phase = "BOTTOM";
       state.overheadHoldCount = 0;
+      // ✅ Reset peak position tracking
+      state.currentRepPeakWristY = 1.0;
+      state.currentRepPeakWristX = wrist.x;
       if (CONFIG.DEBUG_MODE) console.log("Phase: BOTTOM (Ready to Pull)");
     }
   }
 
-  // B. PULL: Waiting for the upward movement to start concentric phase.
+  // B. PULL
   else if (state.phase === "BOTTOM") {
     if (!isBelowHip && vy < -0.4) {
       state.phase = "CONCENTRIC";
@@ -697,27 +500,30 @@ function runSnatchLogic(pose) {
     }
   }
 
-  // C. POWER: Tracking peak speed and looking for the catch.
+  // C. POWER
   else if (state.phase === "CONCENTRIC") {
-    // 1. Capture absolute peak velocity during the flight
+    // 1. Capture peak velocity (EXISTING)
     if (v > state.currentRepPeak) state.currentRepPeak = v;
 
-    // 2. Lockout Check (Stability above shoulder)
+    // ✅ 2. Track HIGHEST position reached (for movement classification)
+    if (wrist.y < state.currentRepPeakWristY) {
+      state.currentRepPeakWristY = wrist.y;
+      state.currentRepPeakWristX = wrist.x;
+    }
+
+    // 3. Lockout Check (EXISTING PROVEN LOGIC)
     const isStable = Math.abs(vy) < CONFIG.LOCKOUT_VY_CUTOFF && v < CONFIG.LOCKOUT_SPEED_CUTOFF;
 
     if (isAboveShoulder && isStable) {
       state.overheadHoldCount++;
 
-      // Require 2 frames of stability
       if (state.overheadHoldCount >= 2) {
-        recordRep();
+        recordRep(pose);  // ✅ Pass pose for classification
         if (CONFIG.DEBUG_MODE) console.log(`📊 Rep ${state.repHistory.length} Recorded!`);
       }
     } else {
-      // If they wobble out of stable zone, reset the hold timer
       state.overheadHoldCount = 0;
 
-      // Safety: If they drop back down without locking out, reset to bottom
       if (isBelowHip) {
         state.phase = "BOTTOM";
         if (CONFIG.DEBUG_MODE) console.log("Phase: BOTTOM (Aborted/Dropped)");
@@ -726,15 +532,70 @@ function runSnatchLogic(pose) {
   }
 }
 
-function recordRep() {
+// ============================================
+// ✅ MOVEMENT CLASSIFICATION (Uses Proven Criteria)
+// ============================================
+
+function classifyMovement(pose) {
+  if (!pose) return 'UNKNOWN';
+
+  const idx = state.lockedSide === "left" ? CONFIG.LEFT : CONFIG.RIGHT;
+  const shoulder = pose[idx.SHOULDER];
+  const hip = pose[idx.HIP];
+
+  if (!shoulder || !hip) return 'UNKNOWN';
+
+  const peakY = state.currentRepPeakWristY;
+  const peakX = state.currentRepPeakWristX;
+
+  // Calculate relative height to shoulder
+  const heightAboveShoulder = shoulder.y - peakY;
+  const heightAboveHip = hip.y - peakY;
+
+  // Calculate torso centerline (for clean detection)
+  const lShoulder = pose[CONFIG.LEFT.SHOULDER];
+  const rShoulder = pose[CONFIG.RIGHT.SHOULDER];
+  const torsoCenter = lShoulder && rShoulder ? (lShoulder.x + rShoulder.x) / 2 : shoulder.x;
+  const horizontalDistFromCenter = Math.abs(peakX - torsoCenter);
+
+  if (CONFIG.DEBUG_MODE) {
+    console.log(`[CLASSIFY] PeakY:${peakY.toFixed(3)} | ShoulderY:${shoulder.y.toFixed(3)} | HeightAboveShoulder:${heightAboveShoulder.toFixed(3)} | HorizDist:${horizontalDistFromCenter.toFixed(3)}`);
+  }
+
+  // ✅ SNATCH: Locked out OVERHEAD (clearly above shoulder)
+  // This uses the SAME criteria as your existing snatch detection
+  if (heightAboveShoulder >= CONFIG.MOVEMENT.SNATCH_MIN_HEIGHT_ABOVE_SHOULDER) {
+    return `SNATCH_SINGLE_${state.lockedSide.toUpperCase()}`;
+  }
+
+  // ✅ CLEAN: Locked at RACK position (at shoulder height, close to torso)
+  if (heightAboveShoulder >= CONFIG.MOVEMENT.CLEAN_RACK_HEIGHT_MIN &&
+      heightAboveShoulder <= CONFIG.MOVEMENT.CLEAN_RACK_HEIGHT_MAX &&
+      horizontalDistFromCenter < CONFIG.MOVEMENT.CLEAN_HORIZONTAL_PROXIMITY) {
+    return `CLEAN_SINGLE_${state.lockedSide.toUpperCase()}`;
+  }
+
+  // ✅ SWING: Locked at or below shoulder height (didn't go overhead)
+  if (heightAboveShoulder < CONFIG.MOVEMENT.SWING_MAX_HEIGHT_ABOVE_SHOULDER &&
+      heightAboveHip >= CONFIG.MOVEMENT.SWING_MIN_HEIGHT_ABOVE_HIP) {
+    return `SWING_SINGLE_${state.lockedSide.toUpperCase()}`;
+  }
+
+  // If it doesn't match any criteria clearly
+  if (CONFIG.DEBUG_MODE) {
+    console.log(`[CLASSIFY] UNKNOWN - Criteria not met`);
+  }
+  return `UNKNOWN_SINGLE_${state.lockedSide.toUpperCase()}`;
+}
+
+function recordRep(pose) {
   state.phase = "LOCKOUT";
   state.overheadHoldCount = 0;
 
-  // ✅ NEW: Detect movement type at lockout
-  const movementType = classifyMovementAtLockout();
+  // ✅ Classify movement using PROVEN lockout criteria
+  const movementType = classifyMovement(pose);
 
   if (state.session.currentSet) {
-    // ✅ MODIFIED: Store rep with movement classification
     state.session.currentSet.reps.push({
       velocity: state.currentRepPeak,
       movement: movementType
@@ -743,18 +604,18 @@ function recordRep() {
 
   state.repHistory.push(state.currentRepPeak);
 
-  // ✅ NEW: Update movement history
-  state.movementDetection.movementHistory.push(movementType);
-  if (state.movementDetection.movementHistory.length > 3) {
-    state.movementDetection.movementHistory.shift();
+  // ✅ Update movement history
+  state.movementHistory.push(movementType);
+  if (state.movementHistory.length > 3) {
+    state.movementHistory.shift();
   }
 
-  // Calculate baseline (average of first 3 reps)
+  // Calculate baseline
   if (state.repHistory.length === CONFIG.BASELINE_REPS) {
     state.baseline = state.repHistory.reduce((a,b) => a+b, 0) / CONFIG.BASELINE_REPS;
   }
 
-  // Calculate drop-off percentage
+  // Calculate drop-off
   let dropPct = "--";
   let dropColor = "#fff";
 
@@ -762,20 +623,19 @@ function recordRep() {
     const drop = ((state.baseline - state.currentRepPeak) / state.baseline) * 100;
     dropPct = drop.toFixed(1) + "%";
 
-    // Color coding
     if (drop < CONFIG.DROP_WARN) {
-      dropColor = "#10b981"; // Green - good
+      dropColor = "#10b981";
     } else if (drop < CONFIG.DROP_FAIL) {
-      dropColor = "#fbbf24"; // Yellow - warning
+      dropColor = "#fbbf24";
     } else {
-      dropColor = "#ef4444"; // Red - fatigue
+      dropColor = "#ef4444";
     }
   }
 
   updateUIValues(state.repHistory.length, state.currentRepPeak, dropPct, dropColor);
 
-  // ✅ NEW: Update movement detection UI
-  updateMovementDisplay(movementType, state.movementDetection.detectedConfig, state.movementDetection.detectedHands);
+  // ✅ Update movement display
+  updateMovementDisplay(movementType);
 
   if (CONFIG.DEBUG_MODE) {
     console.log(`📊 REP #${state.repHistory.length}: ${state.currentRepPeak.toFixed(2)} m/s | Drop: ${dropPct} | Movement: ${movementType}`);
@@ -783,7 +643,7 @@ function recordRep() {
 }
 
 // ============================================
-// HELPERS
+// HELPERS (UNCHANGED)
 // ============================================
 
 function isWristInFloorZone(pose, side) {
@@ -809,18 +669,10 @@ function resetSession() {
   state.lockedCalibration = null;
   state.prevWrist = null;
 
-  // ✅ NEW: Reset movement detection
-  state.movementDetection = {
-    leftWristVelocity: 0,
-    rightWristVelocity: 0,
-    leftPrevWrist: null,
-    rightPrevWrist: null,
-    wristSpacing: 0,
-    detectedMovement: 'UNKNOWN',
-    detectedConfig: 'UNKNOWN',
-    detectedHands: 'none',
-    movementHistory: []
-  };
+  // ✅ Reset movement tracking
+  state.currentRepPeakWristY = 1.0;
+  state.currentRepPeakWristX = 0.5;
+  state.movementHistory = [];
 
   updateUIValues(0, 0, "--", "#fff");
   setStatus("Session Cleared — Ready", "#3b82f6");
@@ -850,9 +702,9 @@ function setStatus(text, color) {
   }
 }
 
-// ✅ NEW: Movement Display Functions
+// ✅ Movement Display Functions (Simplified)
 
-function updateMovementDisplay(movementType, configuration, hands) {
+function updateMovementDisplay(movementType) {
   const movementEl = document.getElementById('detected-movement');
   const configEl = document.getElementById('detected-config');
   const handsEl = document.getElementById('active-hands');
@@ -860,11 +712,9 @@ function updateMovementDisplay(movementType, configuration, hands) {
 
   if (!movementEl || !configEl || !handsEl || !statusIndicator) return;
 
-  // Format movement name for display
   const displayName = formatMovementName(movementType);
   movementEl.textContent = displayName;
 
-  // Add color class based on movement type
   movementEl.className = 'movement-text';
   if (movementType.includes('SWING')) {
     movementEl.classList.add('swing');
@@ -874,16 +724,14 @@ function updateMovementDisplay(movementType, configuration, hands) {
     movementEl.classList.add('snatch');
   }
 
-  // Update configuration
-  configEl.textContent = formatConfiguration(configuration);
+  // Configuration is always "Single Kettlebell" for now (hand already shown)
+  configEl.textContent = 'Single Kettlebell';
 
-  // Update active hands
-  handsEl.textContent = formatHands(hands);
+  // Active hand comes from locked side
+  handsEl.textContent = state.lockedSide === 'left' ? 'Left' : state.lockedSide === 'right' ? 'Right' : '—';
 
-  // Update status indicator
   statusIndicator.className = 'status-indicator locked';
 
-  // Update movement history
   updateMovementHistory(movementType);
 }
 
@@ -891,48 +739,26 @@ function formatMovementName(movementType) {
   const typeMap = {
     'SWING_SINGLE_LEFT': 'One Arm Swing (L)',
     'SWING_SINGLE_RIGHT': 'One Arm Swing (R)',
-    'SWING_TWO_HANDS': 'Two Arm Swing',
-    'SWING_DOUBLE': 'Double KB Swing',
     'CLEAN_SINGLE_LEFT': 'One Arm Clean (L)',
     'CLEAN_SINGLE_RIGHT': 'One Arm Clean (R)',
-    'CLEAN_TWO_HANDS': 'Two Arm Clean',
-    'CLEAN_DOUBLE': 'Double KB Clean',
     'SNATCH_SINGLE_LEFT': 'One Arm Snatch (L)',
     'SNATCH_SINGLE_RIGHT': 'One Arm Snatch (R)',
-    'SNATCH_TWO_HANDS': 'Two Arm Snatch',
-    'SNATCH_DOUBLE': 'Double KB Snatch'
+    'UNKNOWN_SINGLE_LEFT': 'Unknown Movement (L)',
+    'UNKNOWN_SINGLE_RIGHT': 'Unknown Movement (R)'
   };
   return typeMap[movementType] || movementType.replace(/_/g, ' ');
-}
-
-function formatConfiguration(config) {
-  const configMap = {
-    'SINGLE_BELL': 'Single Kettlebell',
-    'TWO_HANDS_ONE_BELL': 'Two Hands (1 KB)',
-    'DOUBLE_BELLS': 'Double Kettlebells'
-  };
-  return configMap[config] || '—';
-}
-
-function formatHands(hands) {
-  if (hands === 'both') return 'Both';
-  if (hands === 'left') return 'Left';
-  if (hands === 'right') return 'Right';
-  return '—';
 }
 
 function updateMovementHistory(movementType) {
   const historyContainer = document.getElementById('history-badges');
   if (!historyContainer) return;
 
-  // Add new badge
   const badge = document.createElement('span');
   badge.className = 'history-badge';
   badge.textContent = formatMovementName(movementType).replace(/\s*\(.\)/, '');
 
   historyContainer.insertBefore(badge, historyContainer.firstChild);
 
-  // Keep only last 3
   while (historyContainer.children.length > 3) {
     historyContainer.removeChild(historyContainer.lastChild);
   }
@@ -958,7 +784,6 @@ function resetMovementDisplay() {
 function drawOverlay() {
   if (!state.lastPose) return;
 
-  // ✅ DEBUG OVERLAY (Top-left corner)
   if (CONFIG.DEBUG_MODE) {
     state.ctx.fillStyle = "#fbbf24";
     state.ctx.font = "12px monospace";
@@ -966,12 +791,12 @@ function drawOverlay() {
     state.ctx.fillText(`Speed: ${state.lastSpeed.toFixed(2)} m/s`, 10, 35);
     state.ctx.fillText(`Vy: ${state.lastVy.toFixed(2)} m/s`, 10, 50);
     state.ctx.fillText(`Stage: ${state.testStage}`, 10, 65);
-    state.ctx.fillText(`Parked: ${state.parkingConfirmed}`, 10, 80);
+    state.ctx.fillText(`Phase: ${state.phase}`, 10, 80);
 
-    // ✅ NEW: Movement detection debug info
-    state.ctx.fillText(`L-Vel: ${state.movementDetection.leftWristVelocity.toFixed(2)} m/s`, 10, 95);
-    state.ctx.fillText(`R-Vel: ${state.movementDetection.rightWristVelocity.toFixed(2)} m/s`, 10, 110);
-    state.ctx.fillText(`Config: ${state.movementDetection.detectedConfig}`, 10, 125);
+    // ✅ Show peak position being tracked
+    if (state.phase === "CONCENTRIC" || state.phase === "LOCKOUT") {
+      state.ctx.fillText(`PeakY: ${state.currentRepPeakWristY.toFixed(3)}`, 10, 95);
+    }
   }
 
   const side = state.testStage === "IDLE" ? state.activeTrackingSide : state.lockedSide;
@@ -1036,7 +861,6 @@ async function exportToMake() {
 
   const totalReps = history.reduce((sum, set) => sum + set.reps.length, 0);
 
-  // ✅ BACKWARD COMPATIBLE: Calculate total average
   const allVelocities = history.flatMap(set => 
     set.reps.map(rep => typeof rep === 'number' ? rep : rep.velocity)
   );
@@ -1049,7 +873,6 @@ async function exportToMake() {
     total_reps: totalReps,
     session_avg_velocity: totalAvg.toFixed(2),
     sets: history.map((set, index) => {
-      // ✅ BACKWARD COMPATIBLE: Handle both number and object formats
       const rawPeaks = set.reps.map(rep => typeof rep === 'number' ? rep : rep.velocity);
       const movements = set.reps.map(rep => 
         typeof rep === 'object' ? rep.movement : `SNATCH_SINGLE_${set.hand.toUpperCase()}`
@@ -1061,7 +884,7 @@ async function exportToMake() {
         rep_count: set.reps.length,
         peak_velocity_avg: parseFloat(set.avgVelocity),
         raw_peaks: rawPeaks,
-        movements: movements // ✅ NEW FIELD
+        movements: movements
       };
     })
   };
