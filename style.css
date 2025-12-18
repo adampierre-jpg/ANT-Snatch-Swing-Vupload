@@ -159,6 +159,133 @@ video {
     text-align: center;
     border: 1px solid #334155;
 }
+/* Movement Detection Panel */
+#movement-detector {
+  background: rgba(0, 0, 0, 0.7);
+  border: 2px solid #10b981;
+  border-radius: 12px;
+  padding: 20px;
+  margin: 15px 0;
+  backdrop-filter: blur(10px);
+}
+
+.detection-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 15px;
+}
+
+.detection-header .label {
+  font-size: 14px;
+  font-weight: 600;
+  color: #9ca3af;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+}
+
+.status-indicator {
+  font-size: 20px;
+  animation: pulse 2s ease-in-out infinite;
+}
+
+.status-indicator.detecting {
+  color: #fbbf24; /* Yellow while detecting */
+}
+
+.status-indicator.locked {
+  color: #10b981; /* Green when locked */
+  animation: none;
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
+}
+
+/* Movement Badge */
+.movement-badge {
+  background: linear-gradient(135deg, #1f2937 0%, #374151 100%);
+  border-radius: 8px;
+  padding: 15px;
+  margin: 10px 0;
+  text-align: center;
+}
+
+.movement-text {
+  font-size: 20px;
+  font-weight: 700;
+  color: #fff;
+  display: block;
+  text-transform: uppercase;
+  letter-spacing: 1.5px;
+}
+
+.movement-text.swing {
+  color: #3b82f6; /* Blue for swings */
+}
+
+.movement-text.clean {
+  color: #8b5cf6; /* Purple for cleans */
+}
+
+.movement-text.snatch {
+  color: #ef4444; /* Red for snatches */
+}
+
+/* Configuration Details */
+.configuration-details {
+  margin-top: 15px;
+  padding-top: 15px;
+  border-top: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.config-row {
+  display: flex;
+  justify-content: space-between;
+  padding: 8px 0;
+}
+
+.config-label {
+  font-size: 13px;
+  color: #9ca3af;
+  font-weight: 500;
+}
+
+.config-value {
+  font-size: 14px;
+  color: #fff;
+  font-weight: 600;
+}
+
+/* Movement History */
+.history-mini {
+  margin-top: 15px;
+  padding-top: 15px;
+  border-top: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.history-label {
+  font-size: 12px;
+  color: #9ca3af;
+  display: block;
+  margin-bottom: 8px;
+}
+
+#history-badges {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.history-badge {
+  background: rgba(255, 255, 255, 0.1);
+  border-radius: 4px;
+  padding: 4px 10px;
+  font-size: 11px;
+  color: #d1d5db;
+  font-weight: 600;
+}
 
 
 .metric-card .label { display: block; font-size: 0.75rem; color: var(--text-muted); margin-bottom: 5px; }
