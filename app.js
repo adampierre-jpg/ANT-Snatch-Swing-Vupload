@@ -55,7 +55,7 @@ const CONFIG = {
   MIN_TRACK_CONF: 0.5,
   
   // EXPORT
-  MAKE_WEBHOOK_URL: "https://hook.us2.make.com/bxyeuukaw4v71k32vx26jwiqbumgi19c",
+  MAKE_WEBHOOK_URL: "https://hook.us2.make.com/0l88dnosrk2t8a29yfk83fej8hp8j3jk",
   
   // DEBUGGING
   DEBUG_MODE: true              // Set false for production
