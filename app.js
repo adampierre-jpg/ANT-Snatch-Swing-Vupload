@@ -141,7 +141,8 @@ async function initializeApp() {
 
   state.isModelLoaded = true;
   document.getElementById("loading-overlay").classList.add("hidden");
-  setStatus("Ready — Upload Video or Start Camera", "#3b82f6");
+  
+setStatus("Vision System Online — Upload Video or Start Camera", "#3b82f6");
   
   state.video.addEventListener("loadeddata", onVideoReady);
   requestAnimationFrame(masterLoop);
@@ -168,6 +169,7 @@ async function startCamera() {
     video: { facingMode: "user", width: { ideal: 1280 }, height: { ideal: 720 } },
     audio: false
   });
+  setStatus("Activating Optics...", "#fbbf24");
   state.video.srcObject = stream;
   state.video.src = "";
   state.video.play();
