@@ -660,28 +660,55 @@ function isWristInFloorZone(pose, side) {
 }
 
 function resetSession() {
+  // Clear session data
   state.session = { currentSet: null, history: [] };
   state.repHistory = [];
   state.baseline = 0;
+  
+  // Reset test stage
   state.testStage = "IDLE";
   state.lockedSide = "unknown";
   state.activeTrackingSide = "left";
   state.armingSide = null;
+  
+  // Reset physics
   state.smoothedVelocity = 0;
   state.smoothedVy = 0;
   state.lastSpeed = 0;
   state.lastVy = 0;
   state.lockedCalibration = null;
   state.prevWrist = null;
-
-  // ✅ Reset movement tracking
+  
+  // Reset rep detection
+  state.phase = "IDLE";
+  state.currentRepPeak = 0;
+  state.overheadHoldCount = 0;
+  state.parkingConfirmed = false;
+  
+  // Reset movement tracking
   state.currentRepPeakWristY = 1.0;
   state.currentRepPeakWristX = 0.5;
   state.movementHistory = [];
-
+  
+  // Reset ending confirmation
+  state.endingConfirmCount = 0;
+  
+  // Reset video to beginning
+  if (state.video && state.video.src) {
+    state.video.pause();
+    state.video.currentTime = 0;
+  }
+  
+  // Reset UI
   updateUIValues(0, 0, "--", "#fff");
+  resetMovementDisplay();
   setStatus("Session Cleared — Ready", "#3b82f6");
+  
+  if (CONFIG.DEBUG_MODE) {
+    console.log("🔄 Session Reset - All state cleared");
+  }
 }
+
 
 // ============================================
 // UI (Enhanced with Movement Display)
