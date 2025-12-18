@@ -66,6 +66,34 @@
 
             </div>
         </div>
+<!-- Movement Detection Display -->
+<div id="movement-detector" class="metric-panel">
+  <div class="detection-header">
+    <span class="label">Movement Detected</span>
+    <span id="detection-status" class="status-indicator">●</span>
+  </div>
+  
+  <div id="movement-display" class="movement-badge">
+    <span class="movement-text" id="detected-movement">Waiting...</span>
+  </div>
+  
+  <div class="configuration-details">
+    <div class="config-row">
+      <span class="config-label">Configuration:</span>
+      <span id="detected-config" class="config-value">—</span>
+    </div>
+    <div class="config-row">
+      <span class="config-label">Active Hand(s):</span>
+      <span id="active-hands" class="config-value">—</span>
+    </div>
+  </div>
+  
+  <!-- Optional: Movement history for recent reps -->
+  <div id="movement-history" class="history-mini">
+    <span class="history-label">Last 3 reps:</span>
+    <div id="history-badges"></div>
+  </div>
+</div>
 
         <!-- Metrics Grid -->
         <div class="metrics-grid">
