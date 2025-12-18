@@ -332,16 +332,18 @@ function checkEndCondition(pose, timeMs) {
 function startNewSet(side) {
   state.lockedSide = side;
   state.testStage = "RUNNING";
+  state.lockedAtMs = state.timeMs;
   
-  // Reset tracking
+  // 1. Reset metrics for the new set
   state.repHistory = [];
-  state.baseline = 0;  // ✅ ADD THIS LINE
   state.currentRepPeak = 0;
   state.overheadHoldCount = 0;
-  state.phase = "IDLE";
-  state.lockedCalibration = null;
-  state.prevWrist = null;
   
+  // 2. IMPORTANT: Pre-prime the phase to BOTTOM
+  // This allows the very first upward pull to be recognized immediately.
+  state.phase = "BOTTOM"; 
+  
+  // 3. Initialize the session object for export
   state.session.currentSet = {
     id: state.session.history.length + 1,
     hand: side,
@@ -350,9 +352,13 @@ function startNewSet(side) {
     lockedAtMs: state.timeMs
   };
 
+  // 4. Update UI
   updateUIValues(0, 0, "--", "#fff");
   setStatus(`LOCKED: ${side.toUpperCase()}`, "#10b981");
+  
+  if (CONFIG.DEBUG_MODE) console.log(`🚀 Set Started [${side}]. Phase: BOTTOM.`);
 }
+
 
 
 
@@ -454,47 +460,62 @@ function runSnatchLogic(pose) {
   const wrist = pose[idx.WRIST];
   const hip = pose[idx.HIP];
   const shoulder = pose[idx.SHOULDER];
-  // const nose = pose[0]; // ❌ Removing Nose for Snatch - too strict
 
   if (!wrist || !hip || !shoulder) return;
 
-  const isBelowHip = wrist.y > hip.y;
-  const isAboveShoulder = wrist.y < shoulder.y; // ✅ Back to Shoulder standard
+  // Logic Boundaries
+  const isBelowHip = wrist.y > (hip.y - 0.05); // Includes small buffer
+  const isAboveShoulder = wrist.y < shoulder.y;
 
-  // STATE MACHINE
+  // --- STATE MACHINE ---
+  
+  // A. RESET: If we are in LOCKOUT or IDLE, we must drop below hip to start next rep.
   if (state.phase === "IDLE" || state.phase === "LOCKOUT") {
     if (isBelowHip) {
       state.phase = "BOTTOM";
       state.overheadHoldCount = 0;
+      if (CONFIG.DEBUG_MODE) console.log("Phase: BOTTOM (Ready to Pull)");
     }
   } 
+  
+  // B. PULL: Waiting for the upward movement to start concentric phase.
   else if (state.phase === "BOTTOM") {
-    if (!isBelowHip) {
+    // Check for upward pull (Above hip + negative vertical velocity)
+    if (!isBelowHip && vy < -0.4) { 
       state.phase = "CONCENTRIC";
       state.currentRepPeak = 0;
+      if (CONFIG.DEBUG_MODE) console.log("Phase: CONCENTRIC (Pulling)");
     }
   } 
+  
+  // C. POWER: Tracking peak speed and looking for the catch.
   else if (state.phase === "CONCENTRIC") {
-    // 1. Peak Velocity (Captured during the pull)
-    if (!isAboveShoulder) {
-      if (v > state.currentRepPeak) state.currentRepPeak = v;
-    }
+    // 1. Capture absolute peak velocity during the flight
+    if (v > state.currentRepPeak) state.currentRepPeak = v;
 
-    // 2. Lockout Check
-    // We allow much higher speed (2.0 m/s) to catch the "punch"
+    // 2. Lockout Check (Stability above shoulder)
     const isStable = Math.abs(vy) < CONFIG.LOCKOUT_VY_CUTOFF && v < CONFIG.LOCKOUT_SPEED_CUTOFF;
     
     if (isAboveShoulder && isStable) {
       state.overheadHoldCount++;
-      // Just 2 frames (~60ms) of stability is enough for a snatch catch
+      // Require 2 frames of stability
       if (state.overheadHoldCount >= 2) {
-        recordRep();
+        recordRep(); // This function will set phase to LOCKOUT
+        if (CONFIG.DEBUG_MODE) console.log(`📊 Rep ${state.repHistory.length} Recorded!`);
       }
     } else {
+      // If they wobble out of stable zone, reset the hold timer
       state.overheadHoldCount = 0;
+      
+      // Safety: If they drop back down without locking out, reset to bottom
+      if (isBelowHip) {
+        state.phase = "BOTTOM";
+        if (CONFIG.DEBUG_MODE) console.log("Phase: BOTTOM (Aborted/Dropped)");
+      }
     }
   }
 }
+
 
 function recordRep() {
   state.phase = "LOCKOUT";
