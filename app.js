@@ -483,10 +483,63 @@ function runSnatchLogic(pose) {
   }
 }
 
+// ============================================
+// REP DETECTION (COMPLETE BLOCK)
+// ============================================
+function runSnatchLogic(pose) {
+  const v = state.smoothedVelocity;
+  const vy = state.smoothedVy;
+  
+  const idx = state.lockedSide === "left" ? CONFIG.LEFT : CONFIG.RIGHT;
+  const wrist = pose[idx.WRIST];
+  const hip = pose[idx.HIP];
+  const shoulder = pose[idx.SHOULDER];
+  const nose = pose[CONFIG.HEAD_LANDMARK];
+
+  if (!wrist || !hip || !shoulder || !nose) return;
+
+  const isBelowHip = wrist.y > hip.y;
+  const isAboveShoulder = wrist.y < shoulder.y;
+  const isAboveNose = wrist.y < nose.y;
+
+  // STATE MACHINE
+  if (state.phase === "IDLE" || state.phase === "LOCKOUT") {
+    if (isBelowHip) {
+      state.phase = "BOTTOM";
+      state.overheadHoldCount = 0;
+    }
+  } 
+  else if (state.phase === "BOTTOM") {
+    if (!isBelowHip) {
+      state.phase = "CONCENTRIC";
+      state.currentRepPeak = 0;
+    }
+  } 
+  else if (state.phase === "CONCENTRIC") {
+    // Track peak velocity throughout pull
+    if (!isAboveShoulder) {
+      if (v > state.currentRepPeak) state.currentRepPeak = v;
+    }
+
+    // Check for lockout
+    const isStable = Math.abs(vy) < CONFIG.LOCKOUT_VY_CUTOFF && v < CONFIG.LOCKOUT_SPEED_CUTOFF;
+    
+    if (isAboveNose && isStable) {
+      state.overheadHoldCount++;
+      if (state.overheadHoldCount >= 2) {
+        recordRep();  // ✅ This triggers the rep count
+      }
+    } else {
+      state.overheadHoldCount = 0;
+    }
+  }
+}
+
 function recordRep() {
   state.phase = "LOCKOUT";
   state.overheadHoldCount = 0;
   
+  // Save rep data
   if (state.session.currentSet) {
     state.session.currentSet.reps.push(state.currentRepPeak);
   }
@@ -508,20 +561,22 @@ function recordRep() {
     
     // Color coding
     if (drop < CONFIG.DROP_WARN) {
-      dropColor = "#10b981"; // Green - good
+      dropColor = "#10b981"; // Green
     } else if (drop < CONFIG.DROP_FAIL) {
-      dropColor = "#fbbf24"; // Yellow - warning
+      dropColor = "#fbbf24"; // Yellow
     } else {
-      dropColor = "#ef4444"; // Red - fatigue
+      dropColor = "#ef4444"; // Red
     }
   }
   
+  // ✅ UPDATE UI
   updateUIValues(state.repHistory.length, state.currentRepPeak, dropPct, dropColor);
   
   if (CONFIG.DEBUG_MODE) {
     console.log(`📊 REP #${state.repHistory.length}: ${state.currentRepPeak.toFixed(2)} m/s | Drop: ${dropPct}`);
   }
 }
+
 
 // ============================================
 // HELPERS
