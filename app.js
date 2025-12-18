@@ -37,8 +37,8 @@ const CONFIG = {
   MAX_DT: 0.1,                  // Max time step (skip lag)
   
   // LOCKOUT DETECTION (Balanced)
-  LOCKOUT_VY_CUTOFF: 0.35,      // Vertical stability (must be relatively still)
-  LOCKOUT_SPEED_CUTOFF: 1.0,    // Total speed stability
+  LOCKOUT_VY_CUTOFF: 0.6,      // Vertical stability (must be relatively still)
+  LOCKOUT_SPEED_CUTOFF: 2.0,    // Total speed stability
   
   // START/STOP GESTURES (Hike & Stand)
   RESET_GRACE_MS_AFTER_LOCK: 2000, // Wait 2s after set starts before allowing end
