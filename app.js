@@ -454,12 +454,14 @@ function runSnatchLogic(pose) {
   const wrist = pose[idx.WRIST];
   const hip = pose[idx.HIP];
   const shoulder = pose[idx.SHOULDER];
-  const nose = pose[CONFIG.HEAD_LANDMARK];
+  // const nose = pose[0]; // ❌ Removing Nose for Snatch - too strict
+
+  if (!wrist || !hip || !shoulder) return;
 
   const isBelowHip = wrist.y > hip.y;
-  const isAboveShoulder = wrist.y < shoulder.y;
-  const isAboveNose = wrist.y < nose.y;
+  const isAboveShoulder = wrist.y < shoulder.y; // ✅ Back to Shoulder standard
 
+  // STATE MACHINE
   if (state.phase === "IDLE" || state.phase === "LOCKOUT") {
     if (isBelowHip) {
       state.phase = "BOTTOM";
@@ -473,17 +475,23 @@ function runSnatchLogic(pose) {
     }
   } 
   else if (state.phase === "CONCENTRIC") {
+    // 1. Peak Velocity (Captured during the pull)
     if (!isAboveShoulder) {
       if (v > state.currentRepPeak) state.currentRepPeak = v;
     }
 
+    // 2. Lockout Check
+    // We allow much higher speed (2.0 m/s) to catch the "punch"
     const isStable = Math.abs(vy) < CONFIG.LOCKOUT_VY_CUTOFF && v < CONFIG.LOCKOUT_SPEED_CUTOFF;
     
-    if (isAboveNose && isStable) {
+    if (isAboveShoulder && isStable) {
       state.overheadHoldCount++;
+      // Just 2 frames (~60ms) of stability is enough for a snatch catch
       if (state.overheadHoldCount >= 2) {
         recordRep();
       }
+    } else {
+      state.overheadHoldCount = 0;
     }
   }
 }
