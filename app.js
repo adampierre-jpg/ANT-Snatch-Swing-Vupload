@@ -45,10 +45,6 @@ const CONFIG = {
   MIN_DET_CONF: 0.5,
   MIN_TRACK_CONF: 0.5,
   
-  // ✅ RELAXED THRESHOLDS FOR DEBUGGING
-  HEAD_DIP_THRESHOLD: 0.03,  // Was 0.02 (more forgiving)
-  HIKE_VY_THRESHOLD: 0.3,    // Was 0.4 (easier to trigger)
-  HIKE_SPEED_THRESHOLD: 0.4, // Was 0.6
   
   MAKE_WEBHOOK_URL: "https://hook.us2.make.com/bxyeuukaw4v71k32vx26jwiqbumgi19c",
   
