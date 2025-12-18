@@ -25,8 +25,6 @@ const CONFIG = {
   HEAD_LANDMARK: 0,
   TORSO_METERS: 0.45,
   BASELINE_REPS: 3,
-DROP_WARN: 15,
-DROP_FAIL: 20,
 
   
   // Velocity Physics
