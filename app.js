@@ -8,7 +8,11 @@ import { PoseLandmarker, FilesetResolver } from "https://cdn.jsdelivr.net/npm/@m
 // ============================================
 // CONFIG
 // ============================================
+// ============================================
+// CONFIG (Complete Version 3.3)
+// ============================================
 const CONFIG = {
+  // LANDMARKS (MediaPipe Body Pose)
   LEFT: {
     WRIST: 15,
     SHOULDER: 11,
@@ -22,36 +26,41 @@ const CONFIG = {
     KNEE: 26
   },
   
-  HEAD_LANDMARK: 0,
-  TORSO_METERS: 0.45,
+  HEAD_LANDMARK: 0,             // Nose (Index 0)
+  TORSO_METERS: 0.45,           // Calibration constant
   
-  // Velocity Physics
-  SMOOTHING_ALPHA: 0.15,
-  MAX_REALISTIC_VELOCITY: 8.0,
-  ZERO_BAND: 0.1,
-  MIN_DT: 0.016,
-  MAX_DT: 0.1,
+  // VELOCITY PHYSICS (Stabilized)
+  SMOOTHING_ALPHA: 0.15,        // Heavy smoothing (0.15) for consistent readings
+  MAX_REALISTIC_VELOCITY: 8.0,  // Cap outliers above 8 m/s
+  ZERO_BAND: 0.1,               // Speed < 0.1 m/s = 0
+  MIN_DT: 0.016,                // Min time step (~60fps)
+  MAX_DT: 0.1,                  // Max time step (skip lag)
   
-  // Lockout Detection
-  LOCKOUT_VY_CUTOFF: 0.35,
-  LOCKOUT_SPEED_CUTOFF: 1.0,
+  // LOCKOUT DETECTION (Balanced)
+  LOCKOUT_VY_CUTOFF: 0.35,      // Vertical stability (must be relatively still)
+  LOCKOUT_SPEED_CUTOFF: 1.0,    // Total speed stability
   
-  // Session Logic
-  RESET_GRACE_MS_AFTER_LOCK: 2000,
+  // START/STOP GESTURES (Hike & Stand)
+  RESET_GRACE_MS_AFTER_LOCK: 2000, // Wait 2s after set starts before allowing end
+  HIKE_VY_THRESHOLD: 0.3,       // Downward speed needed for hike
+  HIKE_SPEED_THRESHOLD: 0.5,    // Total speed needed for hike
   
-  // MediaPipe
+  // REP & DROP-OFF LOGIC
+  BASELINE_REPS: 3,             // First 3 reps set the "100%" baseline
+  DROP_WARN: 15,                // 15% drop = Yellow Warning
+  DROP_FAIL: 20,                // 20% drop = Red Failure
+  
+  // MEDIAPIPE SETTINGS
   MIN_DET_CONF: 0.5,
   MIN_TRACK_CONF: 0.5,
   
-  // ✅ RELAXED THRESHOLDS FOR DEBUGGING
-  HEAD_DIP_THRESHOLD: 0.03,  // Was 0.02 (more forgiving)
-  HIKE_VY_THRESHOLD: 0.3,    // Was 0.4 (easier to trigger)
-  HIKE_SPEED_THRESHOLD: 0.4, // Was 0.6
-  
+  // EXPORT
   MAKE_WEBHOOK_URL: "https://hook.us2.make.com/bxyeuukaw4v71k32vx26jwiqbumgi19c",
   
-  DEBUG_MODE: true  // ✅ ENABLE CONSOLE LOGGING
+  // DEBUGGING
+  DEBUG_MODE: true              // Set false for production
 };
+
 
 // ============================================
 // STATE
