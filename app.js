@@ -264,6 +264,98 @@ async function masterLoop(timestamp) {
   
   drawOverlay();
 }
+// Update movement detection display
+function updateMovementDisplay(movementType, configuration, hands) {
+  const movementEl = document.getElementById('detected-movement');
+  const configEl = document.getElementById('detected-config');
+  const handsEl = document.getElementById('active-hands');
+  const statusIndicator = document.getElementById('detection-status');
+  
+  // Format movement name for display
+  const displayName = formatMovementName(movementType);
+  movementEl.textContent = displayName;
+  
+  // Add color class based on movement type
+  movementEl.className = 'movement-text';
+  if (movementType.includes('SWING')) {
+    movementEl.classList.add('swing');
+  } else if (movementType.includes('CLEAN')) {
+    movementEl.classList.add('clean');
+  } else if (movementType.includes('SNATCH')) {
+    movementEl.classList.add('snatch');
+  }
+  
+  // Update configuration
+  configEl.textContent = formatConfiguration(configuration);
+  
+  // Update active hands
+  handsEl.textContent = formatHands(hands);
+  
+  // Update status indicator
+  statusIndicator.className = 'status-indicator locked';
+}
+
+// Helper: Format movement names
+function formatMovementName(movementType) {
+  const typeMap = {
+    'SWING_SINGLE_LEFT': 'One Arm Swing (L)',
+    'SWING_SINGLE_RIGHT': 'One Arm Swing (R)',
+    'SWING_TWO_HANDS': 'Two Arm Swing',
+    'SWING_DOUBLE': 'Double KB Swing',
+    'CLEAN_SINGLE_LEFT': 'One Arm Clean (L)',
+    'CLEAN_SINGLE_RIGHT': 'One Arm Clean (R)',
+    'CLEAN_DOUBLE': 'Double KB Clean',
+    'SNATCH_SINGLE_LEFT': 'One Arm Snatch (L)',
+    'SNATCH_SINGLE_RIGHT': 'One Arm Snatch (R)',
+    'SNATCH_DOUBLE': 'Double KB Snatch'
+  };
+  return typeMap[movementType] || 'Unknown Movement';
+}
+
+// Helper: Format configuration
+function formatConfiguration(config) {
+  const configMap = {
+    'SINGLE_BELL': 'Single Kettlebell',
+    'TWO_HANDS_ONE_BELL': 'Two Hands (1 KB)',
+    'DOUBLE_BELLS': 'Double Kettlebells'
+  };
+  return configMap[config] || '—';
+}
+
+// Helper: Format hands display
+function formatHands(hands) {
+  if (hands === 'both') return 'Both';
+  if (hands === 'left') return 'Left';
+  if (hands === 'right') return 'Right';
+  return '—';
+}
+
+// Update movement history (last 3 reps)
+function updateMovementHistory(movementType) {
+  const historyContainer = document.getElementById('history-badges');
+  
+  // Add new badge
+  const badge = document.createElement('span');
+  badge.className = 'history-badge';
+  badge.textContent = formatMovementName(movementType).replace(/\s*\(.\)/, '');
+  
+  historyContainer.insertBefore(badge, historyContainer.firstChild);
+  
+  // Keep only last 3
+  while (historyContainer.children.length > 3) {
+    historyContainer.removeChild(historyContainer.lastChild);
+  }
+}
+
+// Reset detection display (on session start)
+function resetMovementDisplay() {
+  document.getElementById('detected-movement').textContent = 'Waiting...';
+  document.getElementById('detected-movement').className = 'movement-text';
+  document.getElementById('detected-config').textContent = '—';
+  document.getElementById('active-hands').textContent = '—';
+  document.getElementById('detection-status').className = 'status-indicator detecting';
+  document.getElementById('history-badges').innerHTML = '';
+}
 
 // ============================================
 // START/END CONDITIONS
@@ -278,6 +370,9 @@ function checkStartCondition(pose, timeMs) {
   const lY = lWrist.y;
   const rY = rWrist.y;
   const activeSide = lY > rY ? "left" : "right";
+  
+  // Update status indicator to show it's detecting
+  document.getElementById('detection-status').className = 'status-indicator detecting';
   
   // Update tracking side
   state.activeTrackingSide = activeSide;
@@ -352,6 +447,7 @@ function startNewSet(side) {
     reps: [],
     startTime: new Date(),
     lockedAtMs: state.timeMs
+    resetMovementDisplay();
   };
 
   // 4. Update UI
@@ -551,7 +647,11 @@ function recordRep() {
       dropColor = "#ef4444"; // Red - fatigue
     }
   }
-  
+  updateMovementDisplay(
+    state.currentMovement,      // Will add in next step
+    state.currentConfiguration,  // Will add in next step
+    state.lockedSide
+  );
   updateUIValues(state.repHistory.length, state.currentRepPeak, dropPct, dropColor);
   
   if (CONFIG.DEBUG_MODE) {
