@@ -1,99 +1,131 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>KB Velocity Tracker</title>
-    <link rel="stylesheet" href="style.css">
-    <link rel="preconnect" href="https://cdn.jsdelivr.net">
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>VBT v3.6 - Movement Detection</title>
+  <link rel="stylesheet" href="style.css">
 </head>
 <body>
+  <div id="loading-overlay">
+    <div class="loading-spinner"></div>
+    <p>Loading Vision System...</p>
+  </div>
 
-<div class="app-container">
-    
-    <!-- HEADER -->
-    <header class="app-header">
-        <h1>KB Velocity Tracker</h1>
-        <div id="status-pill" class="status-pill">Initializing...</div>
-    </header>
-
-    <!-- VIDEO VIEWPORT -->
-    <div class="viewport-wrapper">
-        <div class="viewport-container">
-<!-- Visible to system, but we will use CSS to hide the bar -->
-<video id="video" playsinline muted style="width: 100%; height: auto;"></video>
-
-
-            <canvas id="canvas"></canvas>
-            
-            <!-- Custom Video Controls -->
-            <div class="video-controls">
-                <button id="btn-play-pause" class="control-btn">▶</button>
-                <input type="range" id="seek-bar" value="0" min="0" step="0.1">
-                <span id="time-display">0:00</span>
-            </div>
-
-            <!-- Loading Spinner -->
-            <div id="loading-overlay">
-  <div class="spinner"></div>
-  <p>Initializing Vision Engine...</p> <!-- Was "Loading AI Model" -->
- 
-</div>
-
-        </div>
+  <div class="container">
+    <!-- Status Bar -->
+    <div class="status-bar">
+      <div id="status-pill" class="status-pill">Initializing...</div>
     </div>
 
-    <!-- MAIN DASHBOARD -->
-    <section class="dashboard">
-        
-        <!-- Step 1: Input Source -->
-        <div class="control-group">
-            <label>1. Select Source</label>
-            <div class="btn-row">
-                <button id="btn-camera" class="btn btn-primary">📷 Camera</button>
-                <button id="btn-upload" class="btn btn-secondary" onclick="document.getElementById('file-input').click()">📂 Upload Video</button>
-                <input type="file" id="file-input" accept="video/*" style="display:none">
-            </div>
+    <!-- Video Section -->
+    <div class="video-section">
+      <canvas id="canvas"></canvas>
+      <video id="video" playsinline muted></video>
+    </div>
+
+    <!-- Controls -->
+    <div class="controls">
+      <button id="btn-camera" class="btn btn-primary">Start Camera</button>
+      <input type="file" id="file-input" accept="video/*" class="file-input">
+      <button id="btn-start-test" class="btn btn-success" disabled>Start Test</button>
+      <button id="btn-reset" class="btn btn-secondary" disabled>Reset</button>
+    </div>
+
+    <!-- Metrics Grid -->
+    <div class="metrics-grid">
+      <!-- Cleans -->
+      <div class="metric-card">
+        <h3>Cleans</h3>
+        <div class="metric-value" id="val-cleans">0</div>
+        <div class="metric-details">
+          <div>Peak Velocity: <span id="val-clean-velocity">0.00</span> m/s</div>
+          <div>Drop: <span id="val-clean-drop">--</span></div>
         </div>
+      </div>
 
-        <!-- Step 2: Test Controls -->
-        <div class="control-group">
-            <label>2. Test Controls</label>
-            <div class="btn-row">
-                <button id="btn-start-test" class="btn btn-success" disabled>▶ Start Test</button>
-                <button id="btn-reset" class="btn btn-outline" disabled>↺ Reset</button>
-                <button id="btn-save" class="btn-secondary">Finish & Save</button>
-
-            </div>
+      <!-- Presses -->
+      <div class="metric-card">
+        <h3>Presses</h3>
+        <div class="metric-value" id="val-presses">0</div>
+        <div class="metric-details">
+          <div>Peak Velocity: <span id="val-press-velocity">0.00</span> m/s</div>
+          <div>Drop: <span id="val-press-drop">--</span></div>
         </div>
+      </div>
 
-        <!-- Metrics Grid -->
-        <div class="metrics-grid">
-            <div class="metric-card">
-                <span class="label">Velocity</span>
-                <span class="value" id="val-velocity">0.00</span>
-                <span class="unit">m/s</span>
-            </div>
-            <div class="metric-card">
-                <span class="label">Peak (Rep)</span>
-                <span class="value" id="val-peak">0.00</span>
-                <span class="unit">m/s</span>
-            </div>
-            <div class="metric-card">
-                <span class="label">Reps</span>
-                <span class="value" id="val-reps">0</span>
-                <span class="unit">count</span>
-            </div>
-            <div class="metric-card highlight">
-                <span class="label">Drop %</span>
-                <span class="value" id="val-drop">--</span>
-                <span class="unit">Threshold</span>
-            </div>
+      <!-- Snatches -->
+      <div class="metric-card">
+        <h3>Snatches</h3>
+        <div class="metric-value" id="val-snatches">0</div>
+        <div class="metric-details">
+          <div>Peak Velocity: <span id="val-snatch-velocity">0.00</span> m/s</div>
+          <div>Drop: <span id="val-snatch-drop">--</span></div>
         </div>
-    </section>
+      </div>
 
-</div>
+      <!-- Swings -->
+      <div class="metric-card">
+        <h3>Swings</h3>
+        <div class="metric-value" id="val-swings">0</div>
+        <div class="metric-details">
+          <div>Peak Velocity: <span id="val-swing-velocity">0.00</span> m/s</div>
+          <div>Drop: <span id="val-swing-drop">--</span></div>
+        </div>
+      </div>
 
-<script type="module" src="app.js"></script>
+      <!-- Rows (NEW) -->
+      <div class="metric-card">
+        <h3>Rows</h3>
+        <div class="metric-value" id="val-rows">0</div>
+        <div class="metric-details">
+          <div>Peak Velocity: <span id="val-row-velocity">0.00</span> m/s</div>
+          <div>Drop: <span id="val-row-drop">--</span></div>
+        </div>
+      </div>
+
+      <!-- Live Velocity -->
+      <div class="metric-card">
+        <h3>Live Velocity</h3>
+        <div class="metric-value" id="val-velocity">0.00</div>
+        <div class="metric-label">m/s</div>
+      </div>
+
+      <!-- Total Reps -->
+      <div class="metric-card">
+        <h3>Total Reps</h3>
+        <div class="metric-value" id="val-total-reps">0</div>
+      </div>
+    </div>
+
+    <!-- Movement Detection Panel -->
+    <div class="movement-panel">
+      <div class="panel-header">
+        <h3>Movement Detection</h3>
+        <div class="status-indicator detecting" id="detection-status"></div>
+      </div>
+      <div class="movement-info">
+        <div class="info-row">
+          <span class="info-label">Movement:</span>
+          <span class="movement-text" id="detected-movement">Waiting...</span>
+        </div>
+        <div class="info-row">
+          <span class="info-label">Configuration:</span>
+          <span id="detected-config">—</span>
+        </div>
+        <div class="info-row">
+          <span class="info-label">Active Hand:</span>
+          <span id="active-hands">—</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- Export -->
+    <div class="export-section">
+      <button id="btn-save" class="btn btn-primary">Export to Make.com</button>
+    </div>
+  </div>
+
+  <script type="module" src="app.js"></script>
 </body>
 </html>
