@@ -551,7 +551,7 @@ function runMovementLogic(pose) {
     if (zone === 'RACK' && isStable) {
       state.overheadHoldCount++;
 
-      if (state.overheadHoldCount >= 2) {
+      if (state.overheadHoldCount >= 5) {
         if (state.repStartedFrom === "FLOOR") {
           recordClean(pose, "CLEAN_FROM_FLOOR");
         } else if (state.repStartedFrom === "RACK") {
