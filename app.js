@@ -680,15 +680,13 @@ function runMovementLogic(pose) {
     }
 
     // RIBCAGE LOCKOUT - Row detection (NEW)
-    else if (zone === 'RIBCAGE' && isStable && isHorizontalTorso(pose, state.lockedSide)) {
-      state.overheadHoldCount++;
+    // In CONCENTRIC phase
+else if (zone === 'RIBCAGE' && isStable && isHorizontalTorso(pose, state.lockedSide)) {
+  // Row ONLY if torso is STILL horizontal at lockout
+  recordRow(pose);
+  state.phase = "LOCKOUT";
+}
 
-      if (state.overheadHoldCount >= 2) {
-        recordRow(pose);
-        state.phase = "LOCKOUT";
-        state.overheadHoldCount = 0;
-      }
-    }
 
     // SWING DETECTION - Shoulder height lockout (not rack, not overhead)
     else if (isStable && state.repStartedFrom === "FLOOR") {
