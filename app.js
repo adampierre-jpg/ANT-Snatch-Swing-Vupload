@@ -512,7 +512,7 @@ function runMovementLogic(pose) {
       state.currentRepPeak = 0;
       state.currentRepPeakWristY = 1.0;
       state.currentRepPeakWristX = wrist.x;
-
+state.repStartY = wrist.y;  // ADD THIS
       if (CONFIG.DEBUG_MODE) console.log("Phase: BOTTOM (from FLOOR)");
     }
 
@@ -552,9 +552,9 @@ function runMovementLogic(pose) {
       state.overheadHoldCount++;
 
       if (state.overheadHoldCount >= 5) {
-        if (state.repStartedFrom === "FLOOR") {
-          recordClean(pose, "CLEAN_FROM_FLOOR");
-        } else if (state.repStartedFrom === "RACK") {
+        if (wrist.y < (state.repStartY - 0.2)) {
+        recordClean(pose, "CLEAN_FROM_FLOOR");
+      } else if (state.repStartedFrom === "RACK") {
           recordClean(pose, "RE_CLEAN");
         }
 
