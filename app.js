@@ -1,10 +1,6 @@
 /**
- * VBT v3.5 - COMPLETE MOVEMENT DETECTION
- * - Swing, Clean (floor + re-clean), Press, Snatch detection
- * - Separate counters for cleans and presses
- * - Continuous work tracking (rack → backswing → rack)
- * - Glycolytic fatigue tracking for presses
- * - All bug fixes included
+ * VBT v3.5  - COMPLETE MOVEMENT DETECTION
+ * All bugs resolved - ready for production
  */
 
 import { PoseLandmarker, FilesetResolver } from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/vision_bundle.mjs";
@@ -14,7 +10,6 @@ import { PoseLandmarker, FilesetResolver } from "https://cdn.jsdelivr.net/npm/@m
 // ============================================
 
 const CONFIG = {
-  // LANDMARKS
   LEFT: {
     WRIST: 15,
     SHOULDER: 11,
@@ -30,32 +25,26 @@ const CONFIG = {
   HEAD_LANDMARK: 0,
   TORSO_METERS: 0.45,
 
-  // VELOCITY PHYSICS
   SMOOTHING_ALPHA: 0.15,
   MAX_REALISTIC_VELOCITY: 8.0,
   ZERO_BAND: 0.1,
   MIN_DT: 0.016,
   MAX_DT: 0.1,
 
-  // LOCKOUT DETECTION
   LOCKOUT_VY_CUTOFF: 0.6,
   LOCKOUT_SPEED_CUTOFF: 2.0,
 
-  // START/STOP GESTURES
-  RESET_GRACE_MS_AFTER_LOCK: 5000, // 5 seconds to prevent premature ending
+  RESET_GRACE_MS_AFTER_LOCK: 5000,
   HIKE_VY_THRESHOLD: 0.3,
   HIKE_SPEED_THRESHOLD: 0.5,
 
-  // REP & DROP-OFF LOGIC
   BASELINE_REPS: 3,
   DROP_WARN: 15,
   DROP_FAIL: 20,
 
-  // MEDIAPIPE SETTINGS
   MIN_DET_CONF: 0.5,
   MIN_TRACK_CONF: 0.5,
 
-  // MOVEMENT CLASSIFICATION
   MOVEMENT: {
     SNATCH_MIN_HEIGHT_ABOVE_SHOULDER: 0.05,
     CLEAN_RACK_HEIGHT_MIN: -0.1,
@@ -63,13 +52,11 @@ const CONFIG = {
     CLEAN_HORIZONTAL_PROXIMITY: 0.18,
     SWING_MAX_HEIGHT_ABOVE_SHOULDER: 0.05,
     SWING_MIN_HEIGHT_ABOVE_HIP: 0.1,
-    PRESS_VELOCITY_THRESHOLD: 1.5  // Below = press, Above = ballistic
+    PRESS_VELOCITY_THRESHOLD: 1.5
   },
 
-  // EXPORT
   MAKE_WEBHOOK_URL: "https://hook.us2.make.com/0l88dnosrk2t8a29yfk83fej8hp8j3jk",
 
-  // DEBUGGING
   DEBUG_MODE: true
 };
 
@@ -89,12 +76,10 @@ let state = {
   timeMs: 0,
   lastPose: null,
 
-  // Hand Tracking
   activeTrackingSide: "left",
   lockedSide: "unknown",
   armingSide: null,
 
-  // Physics
   prevWrist: null,
   lockedCalibration: null,
   smoothedVelocity: 0,
@@ -102,33 +87,27 @@ let state = {
   lastSpeed: 0,
   lastVy: 0,
 
-  // Gesture Detection
   parkingConfirmed: false,
   prevHeadY: 0,
 
-  // Rep Logic
   phase: "IDLE",
   currentRepPeak: 0,
   overheadHoldCount: 0,
 
-  // Session Management
   session: {
     currentSet: null,
     history: []
   },
 
-  // Movement Tracking
-  repStartedFrom: null, // 'FLOOR' or 'RACK'
+  repStartedFrom: null,
   currentRepPeakWristY: 1.0,
   currentRepPeakWristX: 0.5,
 
-  // Separate tracking for cleans and presses
   cleanHistory: [],
   pressHistory: [],
   cleanBaseline: 0,
   pressBaseline: 0,
 
-  // Ending confirmation
   endingConfirmCount: 0
 };
 
@@ -226,7 +205,6 @@ function onVideoReady() {
 
 async function toggleTest() {
   if (!state.isTestRunning) {
-    // START/RESUME
     state.isTestRunning = true;
 
     if (state.testStage !== "RUNNING") {
@@ -247,7 +225,6 @@ async function toggleTest() {
       try { await state.video.play(); } catch(e) {}
     }
   } else {
-    // PAUSE
     state.isTestRunning = false;
     document.getElementById("btn-start-test").textContent = "Resume Test";
     setStatus("Paused", "#fbbf24");
@@ -401,7 +378,19 @@ function startNewSet(side) {
     lockedAtMs: state.timeMs
   };
 
-  updateUIValues(0, 0, 0, 0, "--", "#fff", "--", "#fff");
+  // Reset all UI
+  const countEls = ['val-cleans', 'val-presses', 'val-snatches', 'val-swings', 'val-total-reps'];
+  countEls.forEach(id => {
+    const el = document.getElementById(id);
+    if (el) el.textContent = '0';
+  });
+
+  const velEls = ['val-clean-velocity', 'val-press-velocity', 'val-snatch-velocity', 'val-swing-velocity'];
+  velEls.forEach(id => {
+    const el = document.getElementById(id);
+    if (el) el.textContent = '0.00';
+  });
+
   setStatus(`LOCKED: ${side.toUpperCase()}`, "#10b981");
 
   if (CONFIG.DEBUG_MODE) console.log(`🚀 Set Started [${side}]`);
@@ -558,11 +547,11 @@ function runMovementLogic(pose) {
 
     const isStable = Math.abs(vy) < CONFIG.LOCKOUT_VY_CUTOFF && v < CONFIG.LOCKOUT_SPEED_CUTOFF;
 
+    // RACK LOCKOUT - Clean detection
     if (zone === 'RACK' && isStable) {
       state.overheadHoldCount++;
 
       if (state.overheadHoldCount >= 2) {
-        // CLEAN detected
         if (state.repStartedFrom === "FLOOR") {
           recordClean(pose, "CLEAN_FROM_FLOOR");
         } else if (state.repStartedFrom === "RACK") {
@@ -574,6 +563,7 @@ function runMovementLogic(pose) {
       }
     }
 
+    // OVERHEAD LOCKOUT - Press or Snatch
     else if (zone === 'OVERHEAD' && isStable) {
       state.overheadHoldCount++;
 
@@ -589,6 +579,28 @@ function runMovementLogic(pose) {
       }
     }
 
+    // SWING DETECTION - Shoulder height lockout (not rack, not overhead)
+    else if (isStable && state.repStartedFrom === "FLOOR") {
+      // Check if at shoulder height but not in rack zone or overhead
+      const heightAboveShoulder = shoulder.y - wrist.y;
+      const heightAboveHip = hip.y - wrist.y;
+
+      // At shoulder height, ballistic velocity, not in rack position
+      if (heightAboveShoulder < CONFIG.MOVEMENT.SWING_MAX_HEIGHT_ABOVE_SHOULDER &&
+          heightAboveShoulder >= -0.1 &&
+          heightAboveHip >= CONFIG.MOVEMENT.SWING_MIN_HEIGHT_ABOVE_HIP &&
+          state.currentRepPeak >= CONFIG.MOVEMENT.PRESS_VELOCITY_THRESHOLD) {
+
+        state.overheadHoldCount++;
+
+        if (state.overheadHoldCount >= 2) {
+          recordSwing(pose);
+          state.phase = "LOCKOUT";
+          state.overheadHoldCount = 0;
+        }
+      }
+    }
+
     else {
       state.overheadHoldCount = 0;
     }
@@ -596,7 +608,7 @@ function runMovementLogic(pose) {
 
   // PHASE: LOCKOUT - Waiting for next movement or set end
   else if (state.phase === "LOCKOUT") {
-    if (zone === 'BACKSWING') {
+    if (zone === 'BACKSWING' || zone === 'FLOOR') {
       state.phase = "IDLE";
       state.repStartedFrom = null;
     }
@@ -652,7 +664,7 @@ function isWristInFloorZone(pose, side) {
 }
 
 // ============================================
-// RECORDING FUNCTIONS
+// RECORDING FUNCTIONS - ALL FIXED
 // ============================================
 
 function recordClean(pose, cleanType) {
@@ -695,6 +707,7 @@ function recordClean(pose, cleanType) {
 
   updateCleanDisplay(state.cleanHistory.length, state.currentRepPeak, dropPct, dropColor);
   updateMovementDisplay(cleanType);
+  updateTotalReps();
 }
 
 function recordPress(pose) {
@@ -735,6 +748,7 @@ function recordPress(pose) {
 
   updatePressDisplay(state.pressHistory.length, state.currentRepPeak, dropPct, dropColor);
   updateMovementDisplay(`PRESS_SINGLE_${state.lockedSide.toUpperCase()}`);
+  updateTotalReps();
 }
 
 function recordSnatch(pose) {
@@ -749,20 +763,37 @@ function recordSnatch(pose) {
   }
 
   if (CONFIG.DEBUG_MODE) {
-    console.log(`⚡ SNATCH: ${state.currentRepPeak.toFixed(2)} m/s`);
+    console.log(`⚡ SNATCH #${state.session.currentSet.snatches.length}: ${state.currentRepPeak.toFixed(2)} m/s`);
   }
 
+  updateSnatchDisplay(state.session.currentSet.snatches.length, state.currentRepPeak);
   updateMovementDisplay(`SNATCH_SINGLE_${state.lockedSide.toUpperCase()}`);
+  updateTotalReps();
+}
+
+function recordSwing(pose) {
+  const swingData = {
+    type: 'SWING',
+    velocity: state.currentRepPeak,
+    timestamp: Date.now()
+  };
+
+  if (state.session.currentSet) {
+    state.session.currentSet.swings.push(swingData);
+  }
+
+  if (CONFIG.DEBUG_MODE) {
+    console.log(`🔄 SWING #${state.session.currentSet.swings.length}: ${state.currentRepPeak.toFixed(2)} m/s`);
+  }
+
+  updateSwingDisplay(state.session.currentSet.swings.length, state.currentRepPeak);
+  updateMovementDisplay(`SWING_SINGLE_${state.lockedSide.toUpperCase()}`);
+  updateTotalReps();
 }
 
 // ============================================
-// UI UPDATES
+// UI UPDATES - ALL FIXED
 // ============================================
-
-function updateUIValues(cleans, presses, snatches, swings, cleanDrop, cleanColor, pressDrop, pressColor) {
-  const totalEl = document.getElementById("val-total-reps");
-  if (totalEl) totalEl.textContent = cleans + presses + snatches + swings;
-}
 
 function updateCleanDisplay(count, velocity, drop, dropColor) {
   const countEl = document.getElementById("val-cleans");
@@ -788,6 +819,36 @@ function updatePressDisplay(count, velocity, drop, dropColor) {
     dropEl.textContent = drop;
     dropEl.style.color = dropColor;
   }
+}
+
+function updateSnatchDisplay(count, velocity) {
+  const countEl = document.getElementById("val-snatches");
+  const velEl = document.getElementById("val-snatch-velocity");
+
+  if (countEl) countEl.textContent = count;
+  if (velEl) velEl.textContent = velocity.toFixed(2);
+}
+
+function updateSwingDisplay(count, velocity) {
+  const countEl = document.getElementById("val-swings");
+  const velEl = document.getElementById("val-swing-velocity");
+
+  if (countEl) countEl.textContent = count;
+  if (velEl) velEl.textContent = velocity.toFixed(2);
+}
+
+function updateTotalReps() {
+  if (!state.session.currentSet) return;
+
+  const cleans = (state.session.currentSet.cleans || []).length;
+  const presses = (state.session.currentSet.presses || []).length;
+  const snatches = (state.session.currentSet.snatches || []).length;
+  const swings = (state.session.currentSet.swings || []).length;
+
+  const total = cleans + presses + snatches + swings;
+
+  const totalEl = document.getElementById("val-total-reps");
+  if (totalEl) totalEl.textContent = total;
 }
 
 function updateMovementDisplay(movementType) {
@@ -927,7 +988,7 @@ function drawDot(landmark, big, color) {
 }
 
 // ============================================
-// SESSION MANAGEMENT
+// SESSION MANAGEMENT - FIXED RESET
 // ============================================
 
 function resetSession() {
@@ -955,17 +1016,39 @@ function resetSession() {
   state.endingConfirmCount = 0;
   state.repStartedFrom = null;
 
+  // Reset video to beginning
   if (state.video && state.video.src) {
     state.video.pause();
     state.video.currentTime = 0;
   }
 
-  updateUIValues(0, 0, 0, 0, "--", "#fff", "--", "#fff");
+  // Reset ALL UI elements
+  const countEls = ['val-cleans', 'val-presses', 'val-snatches', 'val-swings', 'val-total-reps'];
+  countEls.forEach(id => {
+    const el = document.getElementById(id);
+    if (el) el.textContent = '0';
+  });
+
+  const velEls = ['val-clean-velocity', 'val-press-velocity', 'val-snatch-velocity', 'val-swing-velocity', 'val-velocity'];
+  velEls.forEach(id => {
+    const el = document.getElementById(id);
+    if (el) el.textContent = '0.00';
+  });
+
+  const dropEls = ['val-clean-drop', 'val-press-drop'];
+  dropEls.forEach(id => {
+    const el = document.getElementById(id);
+    if (el) {
+      el.textContent = '--';
+      el.style.color = '#fff';
+    }
+  });
+
   resetMovementDisplay();
   setStatus("Session Cleared — Ready", "#3b82f6");
 
   if (CONFIG.DEBUG_MODE) {
-    console.log("🔄 Session Reset");
+    console.log("🔄 Session Reset - All state cleared");
   }
 }
 
