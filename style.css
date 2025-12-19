@@ -1,5 +1,21 @@
-* {
-  margin: 0;
+ 
+:root {
+  /* Colors */
+  --bg-dark: #0f172a;
+  --primary: #3b82f6;
+  --success: #10b981;
+  
+  /* Movement Colors */
+  --swing: #06b6d4;
+  --clean: #8b5cf6;
+  --press: #f97316;
+  --snatch: #ec4899;
+  
+  /* Spacing, Radius, Shadows... */
+}
+
+{
+   margin: 0;
   padding: 0;
   box-sizing: border-box;
 }
