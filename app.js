@@ -526,6 +526,12 @@ state.repStartY = wrist.y;  // ADD THIS
 
       if (CONFIG.DEBUG_MODE) console.log("Phase: BOTTOM (from RACK)");
     }
+    // ADD THIS - detect press starting from rack
+  else if (zone === 'RACK' && vy < -0.4) {
+    state.phase = "CONCENTRIC";
+    state.currentRepPeak = 0;
+    if (CONFIG.DEBUG_MODE) console.log("Phase: CONCENTRIC (press from rack)");
+  }
   }
 
   // PHASE: BOTTOM - Waiting for upward pull
