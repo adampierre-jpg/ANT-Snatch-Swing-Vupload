@@ -1249,7 +1249,7 @@ async function exportToMake() {
 
   const payload = {
     athlete_id: "dad_ready_user",
-    session_date: new Date().toISO String(),
+    session_date: new Date().toISOString(),
     sets: history.map((set, index) => ({
       set_order: index + 1,
       hand: set.hand,
