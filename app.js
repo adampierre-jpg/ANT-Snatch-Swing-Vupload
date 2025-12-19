@@ -1,6 +1,6 @@
 /**
- * Version 3.3 — DEBUG MODE ENABLED
- * - Fixes: IDLE velocity tracking, visual feedback, relaxed thresholds
+ * VBT v3.6 - COMPLETE MOVEMENT DETECTION WITH ROWS
+ * All movements: Clean, Press, Snatch, Swing, Row
  */
 
 import { PoseLandmarker, FilesetResolver } from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/vision_bundle.mjs";
@@ -8,11 +8,8 @@ import { PoseLandmarker, FilesetResolver } from "https://cdn.jsdelivr.net/npm/@m
 // ============================================
 // CONFIG
 // ============================================
-// ============================================
-// CONFIG (Complete Version 3.3)
-// ============================================
+
 const CONFIG = {
-  // LANDMARKS (MediaPipe Body Pose)
   LEFT: {
     WRIST: 15,
     SHOULDER: 11,
@@ -25,46 +22,50 @@ const CONFIG = {
     HIP: 24,
     KNEE: 26
   },
-  
-  HEAD_LANDMARK: 0,             // Nose (Index 0)
-  TORSO_METERS: 0.45,           // Calibration constant
-  
-  // VELOCITY PHYSICS (Stabilized)
-  SMOOTHING_ALPHA: 0.15,        // Heavy smoothing (0.15) for consistent readings
-  MAX_REALISTIC_VELOCITY: 8.0,  // Cap outliers above 8 m/s
-  ZERO_BAND: 0.1,               // Speed < 0.1 m/s = 0
-  MIN_DT: 0.016,                // Min time step (~60fps)
-  MAX_DT: 0.1,                  // Max time step (skip lag)
-  
-  // LOCKOUT DETECTION (Balanced)
-  LOCKOUT_VY_CUTOFF: 0.6,      // Vertical stability (must be relatively still)
-  LOCKOUT_SPEED_CUTOFF: 2.0,    // Total speed stability
-  
-  // START/STOP GESTURES (Hike & Stand)
-  RESET_GRACE_MS_AFTER_LOCK: 2000, // Wait 2s after set starts before allowing end
-  HIKE_VY_THRESHOLD: 0.3,       // Downward speed needed for hike
-  HIKE_SPEED_THRESHOLD: 0.5,    // Total speed needed for hike
-  
-  // REP & DROP-OFF LOGIC
-  BASELINE_REPS: 3,             // First 3 reps set the "100%" baseline
-  DROP_WARN: 15,                // 15% drop = Yellow Warning
-  DROP_FAIL: 20,                // 20% drop = Red Failure
-  
-  // MEDIAPIPE SETTINGS
+  HEAD_LANDMARK: 0,
+  TORSO_METERS: 0.45,
+
+  SMOOTHING_ALPHA: 0.15,
+  MAX_REALISTIC_VELOCITY: 8.0,
+  ZERO_BAND: 0.1,
+  MIN_DT: 0.016,
+  MAX_DT: 0.1,
+
+  LOCKOUT_VY_CUTOFF: 0.6,
+  LOCKOUT_SPEED_CUTOFF: 2.0,
+
+  RESET_GRACE_MS_AFTER_LOCK: 5000,
+  HIKE_VY_THRESHOLD: 0.3,
+  HIKE_SPEED_THRESHOLD: 0.5,
+
+  BASELINE_REPS: 3,
+  DROP_WARN: 15,
+  DROP_FAIL: 20,
+
   MIN_DET_CONF: 0.5,
   MIN_TRACK_CONF: 0.5,
-  
-  // EXPORT
-  MAKE_WEBHOOK_URL: "https://hook.us2.make.com/0l88dnosrk2t8a29yfk83fej8hp8j3jk",
-  
-  // DEBUGGING
-  DEBUG_MODE: true              // Set false for production
-};
 
+  MOVEMENT: {
+    SNATCH_MIN_HEIGHT_ABOVE_SHOULDER: 0.02,
+    CLEAN_RACK_HEIGHT_MIN: -0.1,
+    CLEAN_RACK_HEIGHT_MAX: 0.15,
+    CLEAN_HORIZONTAL_PROXIMITY: 0.18,
+    SWING_MAX_HEIGHT_ABOVE_SHOULDER: 0.05,
+    SWING_MIN_HEIGHT_ABOVE_HIP: 0.1,
+    PRESS_VELOCITY_THRESHOLD: 2.5,
+    ROW_HORIZONTAL_PROXIMITY: 0.2,
+    HORIZONTAL_TORSO_THRESHOLD: 0.08
+  },
+
+  MAKE_WEBHOOK_URL: "https://hook.us2.make.com/0l88dnosrk2t8a29yfk83fej8hp8j3jk",
+
+  DEBUG_MODE: true
+};
 
 // ============================================
 // STATE
 // ============================================
+
 let state = {
   video: null,
   canvas: null,
@@ -72,62 +73,75 @@ let state = {
   landmarker: null,
   isModelLoaded: false,
   isVideoReady: false,
-  
   isTestRunning: false,
   testStage: "IDLE",
   timeMs: 0,
-  
   lastPose: null,
-  
-  // ✅ TRACK BOTH HANDS IN IDLE
-  activeTrackingSide: "left",  // Which hand we're currently tracking for velocity
+
+  activeTrackingSide: "left",
   lockedSide: "unknown",
   armingSide: null,
-  
-  // Physics (SHARED - used for active hand)
+
   prevWrist: null,
   lockedCalibration: null,
   smoothedVelocity: 0,
   smoothedVy: 0,
   lastSpeed: 0,
   lastVy: 0,
-  
-  // Gesture Detection
+
   parkingConfirmed: false,
   prevHeadY: 0,
-  
-  // Rep Logic
+
   phase: "IDLE",
   currentRepPeak: 0,
   overheadHoldCount: 0,
-  
+
   session: {
     currentSet: null,
     history: []
   },
-  
-  repHistory: []
+
+  repStartedFrom: null,
+  repStartY: null,
+  currentRepPeakWristY: 1.0,
+  currentRepPeakWristX: 0.5,
+
+  cleanHistory: [],
+  pressHistory: [],
+  snatchHistory: [],
+  swingHistory: [],
+  rowHistory: [],
+
+  cleanBaseline: 0,
+  pressBaseline: 0,
+  snatchBaseline: 0,
+  swingBaseline: 0,
+  rowBaseline: 0,
+
+  endingConfirmCount: 0
 };
 
 // ============================================
 // INITIALIZATION
 // ============================================
+
 async function initializeApp() {
   state.video = document.getElementById("video");
   state.canvas = document.getElementById("canvas");
   state.ctx = state.canvas.getContext("2d");
-  
+
   document.getElementById("btn-camera").onclick = startCamera;
   document.getElementById("file-input").onchange = handleUpload;
   document.getElementById("btn-start-test").onclick = toggleTest;
   document.getElementById("btn-reset").onclick = resetSession;
+
   const saveBtn = document.getElementById("btn-save");
   if (saveBtn) saveBtn.onclick = exportToMake;
-  
+
   const visionGen = await FilesetResolver.forVisionTasks(
     "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/wasm"
   );
-  
+
   state.landmarker = await PoseLandmarker.createFromOptions(visionGen, {
     baseOptions: {
       modelAssetPath: "https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_full/float16/1/pose_landmarker_full.task",
@@ -141,23 +155,19 @@ async function initializeApp() {
 
   state.isModelLoaded = true;
   document.getElementById("loading-overlay").classList.add("hidden");
-  
-setStatus("Vision System Online — Upload Video or Start Camera", "#3b82f6");
-  
+  setStatus("Vision System Online — Upload Video or Start Camera", "#3b82f6");
+
   state.video.addEventListener("loadeddata", onVideoReady);
   requestAnimationFrame(masterLoop);
 }
 
-// ============================================
-// VIDEO INPUTS
-// ============================================
 function handleUpload(e) {
   const file = e.target.files?.[0];
   if (!file) return;
 
   resetSession();
   setStatus("Loading Video...", "#fbbf24");
-  
+
   state.video.srcObject = null;
   state.video.src = URL.createObjectURL(file);
   state.video.load();
@@ -165,10 +175,12 @@ function handleUpload(e) {
 
 async function startCamera() {
   resetSession();
+
   const stream = await navigator.mediaDevices.getUserMedia({
     video: { facingMode: "user", width: { ideal: 1280 }, height: { ideal: 720 } },
     audio: false
   });
+
   setStatus("Activating Optics...", "#fbbf24");
   state.video.srcObject = stream;
   state.video.src = "";
@@ -179,8 +191,9 @@ function onVideoReady() {
   state.isVideoReady = true;
   state.canvas.width = state.video.videoWidth;
   state.canvas.height = state.video.videoHeight;
+
   document.getElementById("btn-start-test").disabled = false;
-  
+
   if (state.video.src) {
     const p = state.video.play();
     if (p && typeof p.then === "function") {
@@ -192,25 +205,35 @@ function onVideoReady() {
       }).catch(() => {});
     }
   }
+
   setStatus("Video Ready — Press Start Test", "#3b82f6");
 }
 
 async function toggleTest() {
   if (!state.isTestRunning) {
     state.isTestRunning = true;
-    state.testStage = "IDLE";
-    document.getElementById("btn-start-test").textContent = "Stop Test";
+
+    if (state.testStage !== "RUNNING") {
+      state.testStage = "IDLE";
+    }
+
+    document.getElementById("btn-start-test").textContent = "Pause Test";
     document.getElementById("btn-reset").disabled = false;
-    setStatus("Scanning: Park hand below knee...", "#fbbf24");
-    
+
+    if (state.testStage === "IDLE") {
+      setStatus("Scanning: Park hand below knee...", "#fbbf24");
+      resetMovementDisplay();
+    } else {
+      setStatus("RESUMED: Test Running", "#10b981");
+    }
+
     if (state.video.paused) {
       try { await state.video.play(); } catch(e) {}
     }
   } else {
     state.isTestRunning = false;
-    state.testStage = "IDLE";
-    document.getElementById("btn-start-test").textContent = "Start Test";
-    setStatus("Stopped", "#94a3b8");
+    document.getElementById("btn-start-test").textContent = "Resume Test";
+    setStatus("Paused", "#fbbf24");
     state.video.pause();
   }
 }
@@ -218,18 +241,16 @@ async function toggleTest() {
 // ============================================
 // MASTER LOOP
 // ============================================
+
 async function masterLoop(timestamp) {
   requestAnimationFrame(masterLoop);
-  
   if (!state.isModelLoaded || !state.video) return;
-  
+
   state.timeMs = timestamp;
-  
-  // Clear and draw video
+
   state.ctx.clearRect(0, 0, state.canvas.width, state.canvas.height);
   state.ctx.drawImage(state.video, 0, 0, state.canvas.width, state.canvas.height);
-  
-  // Detect Pose
+
   let pose = null;
   if (state.landmarker && state.video.readyState >= 2) {
     try {
@@ -242,55 +263,52 @@ async function masterLoop(timestamp) {
       console.warn("Detection error:", e);
     }
   }
-  
+
   if (!pose) {
     drawOverlay();
     return;
   }
-  
-  // ✅ ALWAYS RUN PHYSICS (even in IDLE)
+
   if (state.isTestRunning) {
     runPhysics(pose, state.timeMs);
-    
+
     if (state.testStage === "IDLE") {
       checkStartCondition(pose, state.timeMs);
     }
-    
+
     if (state.testStage === "RUNNING") {
-      runSnatchLogic(pose);
+      runMovementLogic(pose);
       checkEndCondition(pose, state.timeMs);
     }
   }
-  
+
   drawOverlay();
 }
 
 // ============================================
 // START/END CONDITIONS
 // ============================================
+
 function checkStartCondition(pose, timeMs) {
   if (state.testStage !== "IDLE") return;
-  
+
   const lWrist = pose[CONFIG.LEFT.WRIST];
   const rWrist = pose[CONFIG.RIGHT.WRIST];
   if (!lWrist || !rWrist) return;
-  
+
   const lY = lWrist.y;
   const rY = rWrist.y;
   const activeSide = lY > rY ? "left" : "right";
-  
-  // Update tracking side
+
   state.activeTrackingSide = activeSide;
-  
+
   const inZone = isWristInFloorZone(pose, activeSide);
   const hikingDown = state.lastVy > 0.3 && state.lastSpeed > 0.5;
-  
-  // ✅ DEBUG LOG
+
   if (CONFIG.DEBUG_MODE && inZone) {
-    console.log(`[START] Side:${activeSide} | Zone:${inZone} | Hike:${hikingDown} | Vy:${state.lastVy.toFixed(2)} | Speed:${state.lastSpeed.toFixed(2)}`);
+    console.log(`[START] Side:${activeSide} | Zone:${inZone} | Hike:${hikingDown} | Vy:${state.lastVy.toFixed(2)}`);
   }
-  
-  // ✅ SIMPLE: Just zone + hike direction
+
   if (inZone && hikingDown) {
     console.log(`🚀 STARTING SET: ${activeSide}`);
     startNewSet(activeSide);
@@ -300,82 +318,127 @@ function checkStartCondition(pose, timeMs) {
 function checkEndCondition(pose, timeMs) {
   if (state.testStage !== "RUNNING") return;
   if (!state.session.currentSet) return;
-  
+
   const grace = timeMs - state.session.currentSet.lockedAtMs;
+
+  const INITIAL_GRACE_MS = 5000;
+  const totalReps = (state.cleanHistory.length || 0) + (state.pressHistory.length || 0) + (state.rowHistory.length || 0);
+  if (grace < INITIAL_GRACE_MS && totalReps === 0) {
+    return;
+  }
+
   if (grace < CONFIG.RESET_GRACE_MS_AFTER_LOCK) return;
-  
+
+  if (state.phase === "CONCENTRIC") return;
+
+  // Don't end set if doing rows (horizontal torso)
+  if (isHorizontalTorso(pose, state.lockedSide)) {
+    return;
+  }
+
   const sideIdx = state.lockedSide === "left" ? CONFIG.LEFT : CONFIG.RIGHT;
   const wrist = pose[sideIdx.WRIST];
   if (!wrist) return;
-  
+
   const inZone = isWristInFloorZone(pose, state.lockedSide);
   const standingUp = state.lastVy < -0.3 && state.lastSpeed > 0.5;
-  
-  // ✅ DEBUG LOG
-  if (CONFIG.DEBUG_MODE && inZone) {
-    console.log(`[END] Zone:${inZone} | StandUp:${standingUp} | Vy:${state.lastVy.toFixed(2)} | Speed:${state.lastSpeed.toFixed(2)}`);
-  }
-  
-  // ✅ SIMPLE: Just zone + upward direction
+
+  if (!state.endingConfirmCount) state.endingConfirmCount = 0;
+
   if (inZone && standingUp) {
-    console.log(`🛑 ENDING SET`);
-    endCurrentSet();
+    state.endingConfirmCount++;
+
+    if (state.endingConfirmCount >= 2) {
+      console.log(`🛑 ENDING SET (${state.cleanHistory.length} cleans, ${state.pressHistory.length} presses, ${state.rowHistory.length} rows)`);
+      state.endingConfirmCount = 0;
+      endCurrentSet();
+    }
+  } else {
+    state.endingConfirmCount = 0;
   }
 }
-
-  
- 
-  
-
 
 // ============================================
 // SET MANAGEMENT
 // ============================================
+
 function startNewSet(side) {
   state.lockedSide = side;
   state.testStage = "RUNNING";
   state.lockedAtMs = state.timeMs;
-  
-  // 1. Reset metrics for the new set
-  state.repHistory = [];
+
+  state.cleanHistory = [];
+  state.pressHistory = [];
+  state.snatchHistory = [];
+  state.swingHistory = [];
+  state.rowHistory = [];
+
+  state.cleanBaseline = 0;
+  state.pressBaseline = 0;
+  state.snatchBaseline = 0;
+  state.swingBaseline = 0;
+  state.rowBaseline = 0;
+
   state.currentRepPeak = 0;
   state.overheadHoldCount = 0;
-  
-  // 2. IMPORTANT: Pre-prime the phase to BOTTOM
-  // This allows the very first upward pull to be recognized immediately.
-  state.phase = "BOTTOM"; 
-  
-  // 3. Initialize the session object for export
+  state.endingConfirmCount = 0;
+
+  state.phase = "IDLE";
+  state.repStartedFrom = null;
+  state.repStartY = null;
+
   state.session.currentSet = {
     id: state.session.history.length + 1,
     hand: side,
-    reps: [],
+    cleans: [],
+    presses: [],
+    snatches: [],
+    swings: [],
+    rows: [],
     startTime: new Date(),
     lockedAtMs: state.timeMs
   };
 
-  // 4. Update UI
-  updateUIValues(0, 0, "--", "#fff");
+  const countEls = ['val-cleans', 'val-presses', 'val-snatches', 'val-swings', 'val-rows', 'val-total-reps'];
+  countEls.forEach(id => {
+    const el = document.getElementById(id);
+    if (el) el.textContent = '0';
+  });
+
+  const velEls = ['val-clean-velocity', 'val-press-velocity', 'val-snatch-velocity', 'val-swing-velocity', 'val-row-velocity'];
+  velEls.forEach(id => {
+    const el = document.getElementById(id);
+    if (el) el.textContent = '0.00';
+  });
+
   setStatus(`LOCKED: ${side.toUpperCase()}`, "#10b981");
-  
-  if (CONFIG.DEBUG_MODE) console.log(`🚀 Set Started [${side}]. Phase: BOTTOM.`);
+
+  if (CONFIG.DEBUG_MODE) console.log(`🚀 Set Started [${side}]`);
 }
-
-
-
-
 
 function endCurrentSet() {
   if (state.session.currentSet) {
     state.session.currentSet.endTime = new Date();
-    
-    const peaks = state.session.currentSet.reps;
-    const avg = peaks.length > 0 ? peaks.reduce((a,b)=>a+b,0)/peaks.length : 0;
-    state.session.currentSet.avgVelocity = avg.toFixed(2);
-    
+
+    const cleanCount = state.session.currentSet.cleans.length;
+    const pressCount = state.session.currentSet.presses.length;
+    const snatchCount = state.session.currentSet.snatches.length;
+    const swingCount = state.session.currentSet.swings.length;
+    const rowCount = state.session.currentSet.rows.length;
+
+    state.session.currentSet.summary = {
+      total_cleans: cleanCount,
+      floor_cleans: state.session.currentSet.cleans.filter(c => c.type === 'CLEAN_FROM_FLOOR').length,
+      re_cleans: state.session.currentSet.cleans.filter(c => c.type === 'RE_CLEAN').length,
+      total_presses: pressCount,
+      total_snatches: snatchCount,
+      total_swings: swingCount,
+      total_rows: rowCount
+    };
+
     state.session.history.push(state.session.currentSet);
   }
-  
+
   state.testStage = "IDLE";
   state.lockedSide = "unknown";
   state.session.currentSet = null;
@@ -387,19 +450,17 @@ function endCurrentSet() {
 // ============================================
 // PHYSICS ENGINE
 // ============================================
+
 function runPhysics(pose, timeMs) {
-  // ✅ IN IDLE: Track the lower hand
-  // ✅ IN RUNNING: Track the locked side
   const side = state.testStage === "IDLE" ? state.activeTrackingSide : state.lockedSide;
   if (!side || side === "unknown") return;
-  
+
   const idx = side === "left" ? CONFIG.LEFT : CONFIG.RIGHT;
   const wrist = pose[idx.WRIST];
   const shoulder = pose[idx.SHOULDER];
   const hip = pose[idx.HIP];
   if (!wrist || !shoulder || !hip) return;
 
-  // Calibration
   if (!state.lockedCalibration) {
     const torsoPx = Math.abs(shoulder.y - hip.y) * state.canvas.height;
     state.lockedCalibration = Math.max(50, torsoPx / CONFIG.TORSO_METERS);
@@ -409,7 +470,7 @@ function runPhysics(pose, timeMs) {
     state.prevWrist = { x: wrist.x, y: wrist.y, t: timeMs };
     return;
   }
-  
+
   const dt = (timeMs - state.prevWrist.t) / 1000;
   if (dt < CONFIG.MIN_DT || dt > CONFIG.MAX_DT) {
     state.prevWrist = { x: wrist.x, y: wrist.y, t: timeMs };
@@ -423,7 +484,6 @@ function runPhysics(pose, timeMs) {
   let vy = (dyPx / state.lockedCalibration) / dt;
   let speed = Math.hypot(vx, vy);
 
-  // Frame normalization
   const TARGET_FPS = 30;
   const frameTimeMs = 1000 / TARGET_FPS;
   const actualFrameTimeMs = timeMs - state.prevWrist.t;
@@ -432,180 +492,593 @@ function runPhysics(pose, timeMs) {
   vy *= timeRatio;
   speed = Math.hypot(vx, vy);
 
-  // Zero band
   if (speed < CONFIG.ZERO_BAND) speed = 0;
 
-  // Smoothing
   state.smoothedVelocity = CONFIG.SMOOTHING_ALPHA * speed + (1 - CONFIG.SMOOTHING_ALPHA) * state.smoothedVelocity;
   state.smoothedVy = CONFIG.SMOOTHING_ALPHA * vy + (1 - CONFIG.SMOOTHING_ALPHA) * state.smoothedVy;
-  
-  // Ceiling
+
   state.lastSpeed = Math.min(state.smoothedVelocity, CONFIG.MAX_REALISTIC_VELOCITY);
   state.lastVy = Math.min(Math.max(state.smoothedVy, -CONFIG.MAX_REALISTIC_VELOCITY), CONFIG.MAX_REALISTIC_VELOCITY);
-  
+
   state.prevWrist = { x: wrist.x, y: wrist.y, t: timeMs };
-  
-  // Update UI
+
   if (state.testStage === "RUNNING") {
     document.getElementById("val-velocity").textContent = state.lastSpeed.toFixed(2);
   }
 }
 
 // ============================================
-// REP DETECTION
+// POSITION HELPERS
 // ============================================
-function runSnatchLogic(pose) {
-  const v = state.smoothedVelocity;
-  const vy = state.smoothedVy;
-  
-  const idx = state.lockedSide === "left" ? CONFIG.LEFT : CONFIG.RIGHT;
+
+function isHorizontalTorso(pose, side) {
+  const idx = side === "left" ? CONFIG.LEFT : CONFIG.RIGHT;
+  const shoulder = pose[idx.SHOULDER];
+  const hip = pose[idx.HIP];
+
+  if (!shoulder || !hip) return false;
+
+  // Shoulder and hip at nearly same Y level (horizontal torso)
+  return Math.abs(shoulder.y - hip.y) < CONFIG.MOVEMENT.HORIZONTAL_TORSO_THRESHOLD;
+}
+
+function getWristZone(pose, side) {
+  const idx = side === "left" ? CONFIG.LEFT : CONFIG.RIGHT;
   const wrist = pose[idx.WRIST];
   const hip = pose[idx.HIP];
   const shoulder = pose[idx.SHOULDER];
+  const knee = pose[idx.KNEE];
 
-  if (!wrist || !hip || !shoulder) return;
+  if (!wrist || !hip || !shoulder || !knee) return 'UNKNOWN';
 
-  // Logic Boundaries
-  const isBelowHip = wrist.y > (hip.y - 0.05); // Includes small buffer
-  const isAboveShoulder = wrist.y < shoulder.y;
+  const lShoulder = pose[CONFIG.LEFT.SHOULDER];
+  const rShoulder = pose[CONFIG.RIGHT.SHOULDER];
+  const torsoCenter = (lShoulder.x + rShoulder.x) / 2;
+  const horizontalDist = Math.abs(wrist.x - torsoCenter);
+  const isCloseToTorso = horizontalDist < CONFIG.MOVEMENT.CLEAN_HORIZONTAL_PROXIMITY;
 
-  // --- STATE MACHINE ---
-  
-  // A. RESET: If we are in LOCKOUT or IDLE, we must drop below hip to start next rep.
-  if (state.phase === "IDLE" || state.phase === "LOCKOUT") {
-    if (isBelowHip) {
-      state.phase = "BOTTOM";
-      state.overheadHoldCount = 0;
-      if (CONFIG.DEBUG_MODE) console.log("Phase: BOTTOM (Ready to Pull)");
-    }
-  } 
-  
-  // B. PULL: Waiting for the upward movement to start concentric phase.
-  else if (state.phase === "BOTTOM") {
-    // Check for upward pull (Above hip + negative vertical velocity)
-    if (!isBelowHip && vy < -0.4) { 
-      state.phase = "CONCENTRIC";
-      state.currentRepPeak = 0;
-      if (CONFIG.DEBUG_MODE) console.log("Phase: CONCENTRIC (Pulling)");
-    }
-  } 
-  
-  // C. POWER: Tracking peak speed and looking for the catch.
-  else if (state.phase === "CONCENTRIC") {
-    // 1. Capture absolute peak velocity during the flight
-    if (v > state.currentRepPeak) state.currentRepPeak = v;
-
-    // 2. Lockout Check (Stability above shoulder)
-    const isStable = Math.abs(vy) < CONFIG.LOCKOUT_VY_CUTOFF && v < CONFIG.LOCKOUT_SPEED_CUTOFF;
-    
-    if (isAboveShoulder && isStable) {
-      state.overheadHoldCount++;
-      // Require 2 frames of stability
-      if (state.overheadHoldCount >= 2) {
-        recordRep(); // This function will set phase to LOCKOUT
-        if (CONFIG.DEBUG_MODE) console.log(`📊 Rep ${state.repHistory.length} Recorded!`);
-      }
-    } else {
-      // If they wobble out of stable zone, reset the hold timer
-      state.overheadHoldCount = 0;
-      
-      // Safety: If they drop back down without locking out, reset to bottom
-      if (isBelowHip) {
-        state.phase = "BOTTOM";
-        if (CONFIG.DEBUG_MODE) console.log("Phase: BOTTOM (Aborted/Dropped)");
-      }
-    }
+  if (wrist.y < (shoulder.y - CONFIG.MOVEMENT.SNATCH_MIN_HEIGHT_ABOVE_SHOULDER)) {
+    return 'OVERHEAD';
   }
+
+  // NEW: Ribcage zone for rows (between shoulder and hip, horizontal torso)
+  if (wrist.y > shoulder.y && wrist.y < hip.y && 
+      horizontalDist < CONFIG.MOVEMENT.ROW_HORIZONTAL_PROXIMITY && 
+      isHorizontalTorso(pose, side)) {
+    return 'RIBCAGE';
+  }
+
+  if (wrist.y >= (shoulder.y + CONFIG.MOVEMENT.CLEAN_RACK_HEIGHT_MIN) && 
+      wrist.y <= (shoulder.y + CONFIG.MOVEMENT.CLEAN_RACK_HEIGHT_MAX) && 
+      isCloseToTorso) {
+    return 'RACK';
+  }
+
+  if (wrist.y > hip.y && wrist.y <= knee.y) {
+    return 'BACKSWING';
+  }
+
+  if (wrist.y > knee.y) {
+    return 'FLOOR';
+  }
+
+  return 'TRANSITION';
 }
 
-
-function recordRep() {
-  state.phase = "LOCKOUT";
-  state.overheadHoldCount = 0;
-  
-  if (state.session.currentSet) {
-    state.session.currentSet.reps.push(state.currentRepPeak);
-  }
-  
-  state.repHistory.push(state.currentRepPeak);
-  
-  // Calculate baseline (average of first 3 reps)
-  if (state.repHistory.length === CONFIG.BASELINE_REPS) {
-    state.baseline = state.repHistory.reduce((a,b) => a+b, 0) / CONFIG.BASELINE_REPS;
-  }
-  
-  // Calculate drop-off percentage
-  let dropPct = "--";
-  let dropColor = "#fff";
-  
-  if (state.baseline > 0 && state.repHistory.length > CONFIG.BASELINE_REPS) {
-    const drop = ((state.baseline - state.currentRepPeak) / state.baseline) * 100;
-    dropPct = drop.toFixed(1) + "%";
-    
-    // Color coding
-    if (drop < CONFIG.DROP_WARN) {
-      dropColor = "#10b981"; // Green - good
-    } else if (drop < CONFIG.DROP_FAIL) {
-      dropColor = "#fbbf24"; // Yellow - warning
-    } else {
-      dropColor = "#ef4444"; // Red - fatigue
-    }
-  }
-  
-  updateUIValues(state.repHistory.length, state.currentRepPeak, dropPct, dropColor);
-  
-  if (CONFIG.DEBUG_MODE) {
-    console.log(`📊 REP #${state.repHistory.length}: ${state.currentRepPeak.toFixed(2)} m/s | Drop: ${dropPct}`);
-  }
-}
-
-// ============================================
-// HELPERS
-// ============================================
 function isWristInFloorZone(pose, side) {
   const idx = side === "left" ? CONFIG.LEFT : CONFIG.RIGHT;
   const wrist = pose[idx.WRIST];
   const knee = pose[idx.KNEE];
-  
   if (!wrist || !knee) return false;
   return wrist.y > knee.y;
 }
 
-function resetSession() {
-  state.session = { currentSet: null, history: [] };
-  state.repHistory = [];
-  state.baseline = 0;  // ✅ ADD THIS LINE
-  state.testStage = "IDLE";
-  state.lockedSide = "unknown";
-  state.activeTrackingSide = "left";
-  state.armingSide = null;
-  state.smoothedVelocity = 0;
-  state.smoothedVy = 0;
-  state.lastSpeed = 0;
-  state.lastVy = 0;
-  state.lockedCalibration = null;
-  state.prevWrist = null;
-  
-  updateUIValues(0, 0, "--", "#fff");
-  setStatus("Session Cleared — Ready", "#3b82f6");
+// ============================================
+// MOVEMENT DETECTION LOGIC
+// ============================================
+
+function runMovementLogic(pose) {
+  const v = state.smoothedVelocity;
+  const vy = state.smoothedVy;
+  const idx = state.lockedSide === "left" ? CONFIG.LEFT : CONFIG.RIGHT;
+  const wrist = pose[idx.WRIST];
+  const hip = pose[idx.HIP];
+  const shoulder = pose[idx.SHOULDER];
+  const knee = pose[idx.KNEE];
+
+  if (!wrist || !hip || !shoulder || !knee) return;
+
+  const zone = getWristZone(pose, state.lockedSide);
+
+  // PHASE: IDLE/LOCKOUT - Waiting for next movement
+  if (state.phase === "IDLE" || state.phase === "LOCKOUT") {
+
+    if (zone === 'FLOOR') {
+      state.phase = "BOTTOM";
+      state.repStartedFrom = "FLOOR";
+      state.repStartY = wrist.y;
+      state.overheadHoldCount = 0;
+      state.currentRepPeak = 0;
+      state.currentRepPeakWristY = 1.0;
+      state.currentRepPeakWristX = wrist.x;
+
+      if (CONFIG.DEBUG_MODE) console.log("Phase: BOTTOM (from FLOOR)");
+    }
+
+    else if (zone === 'BACKSWING') {
+      state.phase = "BOTTOM";
+      state.repStartedFrom = "RACK";
+      state.repStartY = wrist.y;
+      state.overheadHoldCount = 0;
+      state.currentRepPeak = 0;
+      state.currentRepPeakWristY = 1.0;
+      state.currentRepPeakWristX = wrist.x;
+
+      if (CONFIG.DEBUG_MODE) console.log("Phase: BOTTOM (from RACK)");
+    }
+
+    // Detect press starting from rack
+    else if (zone === 'RACK' && vy < -0.4) {
+      state.phase = "CONCENTRIC";
+      state.currentRepPeak = 0;
+      if (CONFIG.DEBUG_MODE) console.log("Phase: CONCENTRIC (press from rack)");
+    }
+  }
+
+  // PHASE: BOTTOM - Waiting for upward pull
+  else if (state.phase === "BOTTOM") {
+    if (zone !== 'FLOOR' && zone !== 'BACKSWING' && vy < -0.4) {
+      state.phase = "CONCENTRIC";
+      if (CONFIG.DEBUG_MODE) console.log("Phase: CONCENTRIC");
+    }
+  }
+
+  // PHASE: CONCENTRIC - Tracking upward movement
+  else if (state.phase === "CONCENTRIC") {
+    if (v > state.currentRepPeak) state.currentRepPeak = v;
+
+    if (wrist.y < state.currentRepPeakWristY) {
+      state.currentRepPeakWristY = wrist.y;
+      state.currentRepPeakWristX = wrist.x;
+    }
+
+    const isStable = Math.abs(vy) < CONFIG.LOCKOUT_VY_CUTOFF && v < CONFIG.LOCKOUT_SPEED_CUTOFF;
+
+    // RACK LOCKOUT - Clean detection
+    if (zone === 'RACK' && isStable) {
+      state.overheadHoldCount++;
+
+      if (state.overheadHoldCount >= 2) {
+        if (state.repStartedFrom === "FLOOR") {
+          // Only count if wrist went UP (Y decreased significantly)
+          if (wrist.y < (state.repStartY - 0.2)) {
+            recordClean(pose, "CLEAN_FROM_FLOOR");
+          }
+        } else if (state.repStartedFrom === "RACK") {
+          recordClean(pose, "RE_CLEAN");
+        }
+
+        state.phase = "LOCKOUT";
+        state.overheadHoldCount = 0;
+      }
+    }
+
+    // OVERHEAD LOCKOUT - Press or Snatch
+    else if (zone === 'OVERHEAD' && isStable) {
+      state.overheadHoldCount++;
+
+      if (state.overheadHoldCount >= 2) {
+        if (state.currentRepPeak < CONFIG.MOVEMENT.PRESS_VELOCITY_THRESHOLD) {
+          recordPress(pose);
+        } else {
+          recordSnatch(pose);
+        }
+
+        state.phase = "LOCKOUT";
+        state.overheadHoldCount = 0;
+      }
+    }
+
+    // RIBCAGE LOCKOUT - Row detection (NEW)
+    else if (zone === 'RIBCAGE' && isStable && isHorizontalTorso(pose, state.lockedSide)) {
+      state.overheadHoldCount++;
+
+      if (state.overheadHoldCount >= 2) {
+        recordRow(pose);
+        state.phase = "LOCKOUT";
+        state.overheadHoldCount = 0;
+      }
+    }
+
+    // SWING DETECTION - Shoulder height lockout (not rack, not overhead)
+    else if (isStable && state.repStartedFrom === "FLOOR") {
+      const heightAboveShoulder = shoulder.y - wrist.y;
+      const heightAboveHip = hip.y - wrist.y;
+
+      if (heightAboveShoulder < CONFIG.MOVEMENT.SWING_MAX_HEIGHT_ABOVE_SHOULDER &&
+          heightAboveShoulder >= -0.1 &&
+          heightAboveHip >= CONFIG.MOVEMENT.SWING_MIN_HEIGHT_ABOVE_HIP &&
+          state.currentRepPeak >= CONFIG.MOVEMENT.PRESS_VELOCITY_THRESHOLD) {
+
+        state.overheadHoldCount++;
+
+        if (state.overheadHoldCount >= 2) {
+          recordSwing(pose);
+          state.phase = "LOCKOUT";
+          state.overheadHoldCount = 0;
+        }
+      }
+    }
+
+    else {
+      state.overheadHoldCount = 0;
+    }
+  }
+
+  // PHASE: LOCKOUT - Waiting for next movement or set end
+  else if (state.phase === "LOCKOUT") {
+    if (zone === 'BACKSWING' || zone === 'FLOOR') {
+      state.phase = "IDLE";
+      state.repStartedFrom = null;
+      state.repStartY = null;
+    }
+  }
 }
 
-  
+// ============================================
+// RECORDING FUNCTIONS
+// ============================================
+
+function recordClean(pose, cleanType) {
+  const cleanData = {
+    type: cleanType,
+    velocity: state.currentRepPeak,
+    timestamp: Date.now()
+  };
+
+  if (state.session.currentSet) {
+    state.session.currentSet.cleans.push(cleanData);
+  }
+
+  state.cleanHistory.push(state.currentRepPeak);
+
+  if (state.cleanHistory.length === CONFIG.BASELINE_REPS && !state.cleanBaseline) {
+    state.cleanBaseline = state.cleanHistory.reduce((a,b) => a+b, 0) / CONFIG.BASELINE_REPS;
+  }
+
+  let dropPct = "--";
+  let dropColor = "#fff";
+  if (state.cleanBaseline > 0 && state.cleanHistory.length > CONFIG.BASELINE_REPS) {
+    const drop = ((state.cleanBaseline - state.currentRepPeak) / state.cleanBaseline) * 100;
+    dropPct = drop.toFixed(1) + "%";
+
+    if (drop < CONFIG.DROP_WARN) {
+      dropColor = "#10b981";
+    } else if (drop < CONFIG.DROP_FAIL) {
+      dropColor = "#fbbf24";
+    } else {
+      dropColor = "#ef4444";
+    }
+  }
+
+  const displayType = cleanType === "CLEAN_FROM_FLOOR" ? "Clean (Floor)" : "Re-Clean";
+
+  if (CONFIG.DEBUG_MODE) {
+    console.log(`✅ ${displayType} #${state.cleanHistory.length}: ${state.currentRepPeak.toFixed(2)} m/s | Drop: ${dropPct}`);
+  }
+
+  updateCleanDisplay(state.cleanHistory.length, state.currentRepPeak, dropPct, dropColor);
+  updateMovementDisplay(cleanType);
+  updateTotalReps();
+}
+
+function recordPress(pose) {
+  const pressData = {
+    type: 'PRESS',
+    velocity: state.currentRepPeak,
+    timestamp: Date.now()
+  };
+
+  if (state.session.currentSet) {
+    state.session.currentSet.presses.push(pressData);
+  }
+
+  state.pressHistory.push(state.currentRepPeak);
+
+  if (state.pressHistory.length === CONFIG.BASELINE_REPS && !state.pressBaseline) {
+    state.pressBaseline = state.pressHistory.reduce((a,b) => a+b, 0) / CONFIG.BASELINE_REPS;
+  }
+
+  let dropPct = "--";
+  let dropColor = "#fff";
+  if (state.pressBaseline > 0 && state.pressHistory.length > CONFIG.BASELINE_REPS) {
+    const drop = ((state.pressBaseline - state.currentRepPeak) / state.pressBaseline) * 100;
+    dropPct = drop.toFixed(1) + "%";
+
+    if (drop < CONFIG.DROP_WARN) {
+      dropColor = "#10b981";
+    } else if (drop < CONFIG.DROP_FAIL) {
+      dropColor = "#fbbf24";
+    } else {
+      dropColor = "#ef4444";
+    }
+  }
+
+  if (CONFIG.DEBUG_MODE) {
+    console.log(`💪 PRESS #${state.pressHistory.length}: ${state.currentRepPeak.toFixed(2)} m/s | Drop: ${dropPct}`);
+  }
+
+  updatePressDisplay(state.pressHistory.length, state.currentRepPeak, dropPct, dropColor);
+  updateMovementDisplay(`PRESS_SINGLE_${state.lockedSide.toUpperCase()}`);
+  updateTotalReps();
+}
+
+function recordSnatch(pose) {
+  const snatchData = {
+    type: 'SNATCH',
+    velocity: state.currentRepPeak,
+    timestamp: Date.now()
+  };
+
+  if (state.session.currentSet) {
+    state.session.currentSet.snatches.push(snatchData);
+  }
+
+  state.snatchHistory.push(state.currentRepPeak);
+
+  if (state.snatchHistory.length === CONFIG.BASELINE_REPS && !state.snatchBaseline) {
+    state.snatchBaseline = state.snatchHistory.reduce((a,b) => a+b, 0) / CONFIG.BASELINE_REPS;
+  }
+
+  let dropPct = "--";
+  let dropColor = "#fff";
+  if (state.snatchBaseline > 0 && state.snatchHistory.length > CONFIG.BASELINE_REPS) {
+    const drop = ((state.snatchBaseline - state.currentRepPeak) / state.snatchBaseline) * 100;
+    dropPct = drop.toFixed(1) + "%";
+
+    if (drop < CONFIG.DROP_WARN) {
+      dropColor = "#10b981";
+    } else if (drop < CONFIG.DROP_FAIL) {
+      dropColor = "#fbbf24";
+    } else {
+      dropColor = "#ef4444";
+    }
+  }
+
+  if (CONFIG.DEBUG_MODE) {
+    console.log(`⚡ SNATCH #${state.snatchHistory.length}: ${state.currentRepPeak.toFixed(2)} m/s | Drop: ${dropPct}`);
+  }
+
+  updateSnatchDisplay(state.snatchHistory.length, state.currentRepPeak, dropPct, dropColor);
+  updateMovementDisplay(`SNATCH_SINGLE_${state.lockedSide.toUpperCase()}`);
+  updateTotalReps();
+}
+
+function recordSwing(pose) {
+  const swingData = {
+    type: 'SWING',
+    velocity: state.currentRepPeak,
+    timestamp: Date.now()
+  };
+
+  if (state.session.currentSet) {
+    state.session.currentSet.swings.push(swingData);
+  }
+
+  state.swingHistory.push(state.currentRepPeak);
+
+  if (state.swingHistory.length === CONFIG.BASELINE_REPS && !state.swingBaseline) {
+    state.swingBaseline = state.swingHistory.reduce((a,b) => a+b, 0) / CONFIG.BASELINE_REPS;
+  }
+
+  let dropPct = "--";
+  let dropColor = "#fff";
+  if (state.swingBaseline > 0 && state.swingHistory.length > CONFIG.BASELINE_REPS) {
+    const drop = ((state.swingBaseline - state.currentRepPeak) / state.swingBaseline) * 100;
+    dropPct = drop.toFixed(1) + "%";
+
+    if (drop < CONFIG.DROP_WARN) {
+      dropColor = "#10b981";
+    } else if (drop < CONFIG.DROP_FAIL) {
+      dropColor = "#fbbf24";
+    } else {
+      dropColor = "#ef4444";
+    }
+  }
+
+  if (CONFIG.DEBUG_MODE) {
+    console.log(`🔄 SWING #${state.swingHistory.length}: ${state.currentRepPeak.toFixed(2)} m/s | Drop: ${dropPct}`);
+  }
+
+  updateSwingDisplay(state.swingHistory.length, state.currentRepPeak, dropPct, dropColor);
+  updateMovementDisplay(`SWING_SINGLE_${state.lockedSide.toUpperCase()}`);
+  updateTotalReps();
+}
+
+function recordRow(pose) {
+  const rowData = {
+    type: 'ROW',
+    velocity: state.currentRepPeak,
+    timestamp: Date.now()
+  };
+
+  if (state.session.currentSet) {
+    state.session.currentSet.rows.push(rowData);
+  }
+
+  state.rowHistory.push(state.currentRepPeak);
+
+  if (state.rowHistory.length === CONFIG.BASELINE_REPS && !state.rowBaseline) {
+    state.rowBaseline = state.rowHistory.reduce((a,b) => a+b, 0) / CONFIG.BASELINE_REPS;
+  }
+
+  let dropPct = "--";
+  let dropColor = "#fff";
+  if (state.rowBaseline > 0 && state.rowHistory.length > CONFIG.BASELINE_REPS) {
+    const drop = ((state.rowBaseline - state.currentRepPeak) / state.rowBaseline) * 100;
+    dropPct = drop.toFixed(1) + "%";
+
+    if (drop < CONFIG.DROP_WARN) {
+      dropColor = "#10b981";
+    } else if (drop < CONFIG.DROP_FAIL) {
+      dropColor = "#fbbf24";
+    } else {
+      dropColor = "#ef4444";
+    }
+  }
+
+  if (CONFIG.DEBUG_MODE) {
+    console.log(`🚣 ROW #${state.rowHistory.length}: ${state.currentRepPeak.toFixed(2)} m/s | Drop: ${dropPct}`);
+  }
+
+  updateRowDisplay(state.rowHistory.length, state.currentRepPeak, dropPct, dropColor);
+  updateMovementDisplay(`ROW_SINGLE_${state.lockedSide.toUpperCase()}`);
+  updateTotalReps();
+}
 
 // ============================================
-// UI
+// UI UPDATES
 // ============================================
-function updateUIValues(reps, peak, drop = "--", dropColor = "#fff") {
-  document.getElementById("val-reps").textContent = reps;
-  document.getElementById("val-peak").textContent = peak.toFixed(2);
-  
-  const dropEl = document.getElementById("val-drop");
+
+function updateCleanDisplay(count, velocity, drop, dropColor) {
+  const countEl = document.getElementById("val-cleans");
+  const velEl = document.getElementById("val-clean-velocity");
+  const dropEl = document.getElementById("val-clean-drop");
+
+  if (countEl) countEl.textContent = count;
+  if (velEl) velEl.textContent = velocity.toFixed(2);
   if (dropEl) {
     dropEl.textContent = drop;
     dropEl.style.color = dropColor;
   }
 }
 
+function updatePressDisplay(count, velocity, drop, dropColor) {
+  const countEl = document.getElementById("val-presses");
+  const velEl = document.getElementById("val-press-velocity");
+  const dropEl = document.getElementById("val-press-drop");
+
+  if (countEl) countEl.textContent = count;
+  if (velEl) velEl.textContent = velocity.toFixed(2);
+  if (dropEl) {
+    dropEl.textContent = drop;
+    dropEl.style.color = dropColor;
+  }
+}
+
+function updateSnatchDisplay(count, velocity, drop, dropColor) {
+  const countEl = document.getElementById("val-snatches");
+  const velEl = document.getElementById("val-snatch-velocity");
+  const dropEl = document.getElementById("val-snatch-drop");
+
+  if (countEl) countEl.textContent = count;
+  if (velEl) velEl.textContent = velocity.toFixed(2);
+  if (dropEl) {
+    dropEl.textContent = drop;
+    dropEl.style.color = dropColor;
+  }
+}
+
+function updateSwingDisplay(count, velocity, drop, dropColor) {
+  const countEl = document.getElementById("val-swings");
+  const velEl = document.getElementById("val-swing-velocity");
+  const dropEl = document.getElementById("val-swing-drop");
+
+  if (countEl) countEl.textContent = count;
+  if (velEl) velEl.textContent = velocity.toFixed(2);
+  if (dropEl) {
+    dropEl.textContent = drop;
+    dropEl.style.color = dropColor;
+  }
+}
+
+function updateRowDisplay(count, velocity, drop, dropColor) {
+  const countEl = document.getElementById("val-rows");
+  const velEl = document.getElementById("val-row-velocity");
+  const dropEl = document.getElementById("val-row-drop");
+
+  if (countEl) countEl.textContent = count;
+  if (velEl) velEl.textContent = velocity.toFixed(2);
+  if (dropEl) {
+    dropEl.textContent = drop;
+    dropEl.style.color = dropColor;
+  }
+}
+
+function updateTotalReps() {
+  if (!state.session.currentSet) return;
+
+  const cleans = (state.session.currentSet.cleans || []).length;
+  const presses = (state.session.currentSet.presses || []).length;
+  const snatches = (state.session.currentSet.snatches || []).length;
+  const swings = (state.session.currentSet.swings || []).length;
+  const rows = (state.session.currentSet.rows || []).length;
+
+  const total = cleans + presses + snatches + swings + rows;
+
+  const totalEl = document.getElementById("val-total-reps");
+  if (totalEl) totalEl.textContent = total;
+}
+
+function updateMovementDisplay(movementType) {
+  const movementEl = document.getElementById('detected-movement');
+  const configEl = document.getElementById('detected-config');
+  const handsEl = document.getElementById('active-hands');
+  const statusIndicator = document.getElementById('detection-status');
+
+  if (!movementEl || !configEl || !handsEl || !statusIndicator) return;
+
+  const displayName = formatMovementName(movementType);
+  movementEl.textContent = displayName;
+
+  movementEl.className = 'movement-text';
+  if (movementType.includes('SWING')) {
+    movementEl.classList.add('swing');
+  } else if (movementType.includes('CLEAN')) {
+    movementEl.classList.add('clean');
+  } else if (movementType.includes('SNATCH')) {
+    movementEl.classList.add('snatch');
+  } else if (movementType.includes('PRESS')) {
+    movementEl.classList.add('press');
+  } else if (movementType.includes('ROW')) {
+    movementEl.classList.add('press');  // Use press color for rows
+  }
+
+  configEl.textContent = 'Single Kettlebell';
+  handsEl.textContent = state.lockedSide === 'left' ? 'Left' : state.lockedSide === 'right' ? 'Right' : '—';
+  statusIndicator.className = 'status-indicator locked';
+}
+
+function formatMovementName(movementType) {
+  const typeMap = {
+    'SWING_SINGLE_LEFT': 'One Arm Swing (L)',
+    'SWING_SINGLE_RIGHT': 'One Arm Swing (R)',
+    'CLEAN_FROM_FLOOR': 'Clean from Floor',
+    'RE_CLEAN': 'Re-Clean',
+    'SNATCH_SINGLE_LEFT': 'One Arm Snatch (L)',
+    'SNATCH_SINGLE_RIGHT': 'One Arm Snatch (R)',
+    'PRESS_SINGLE_LEFT': 'One Arm Press (L)',
+    'PRESS_SINGLE_RIGHT': 'One Arm Press (R)',
+    'ROW_SINGLE_LEFT': 'Sumo Row (L)',
+    'ROW_SINGLE_RIGHT': 'Sumo Row (R)'
+  };
+  return typeMap[movementType] || movementType.replace(/_/g, ' ');
+}
+
+function resetMovementDisplay() {
+  const movementEl = document.getElementById('detected-movement');
+  const configEl = document.getElementById('detected-config');
+  const handsEl = document.getElementById('active-hands');
+  const statusIndicator = document.getElementById('detection-status');
+
+  if (movementEl) {
+    movementEl.textContent = 'Waiting...';
+    movementEl.className = 'movement-text';
+  }
+  if (configEl) configEl.textContent = '—';
+  if (handsEl) handsEl.textContent = '—';
+  if (statusIndicator) statusIndicator.className = 'status-indicator detecting';
+}
 
 function setStatus(text, color) {
   const pill = document.getElementById("status-pill");
@@ -616,10 +1089,13 @@ function setStatus(text, color) {
   }
 }
 
+// ============================================
+// DRAWING
+// ============================================
+
 function drawOverlay() {
   if (!state.lastPose) return;
-  
-  // ✅ DEBUG OVERLAY (Top-left corner)
+
   if (CONFIG.DEBUG_MODE) {
     state.ctx.fillStyle = "#fbbf24";
     state.ctx.font = "12px monospace";
@@ -627,16 +1103,25 @@ function drawOverlay() {
     state.ctx.fillText(`Speed: ${state.lastSpeed.toFixed(2)} m/s`, 10, 35);
     state.ctx.fillText(`Vy: ${state.lastVy.toFixed(2)} m/s`, 10, 50);
     state.ctx.fillText(`Stage: ${state.testStage}`, 10, 65);
-    state.ctx.fillText(`Parked: ${state.parkingConfirmed}`, 10, 80);
+    state.ctx.fillText(`Phase: ${state.phase}`, 10, 80);
+
+    if (state.testStage === "RUNNING") {
+      const zone = getWristZone(state.lastPose, state.lockedSide);
+      state.ctx.fillText(`Zone: ${zone}`, 10, 95);
+
+      if (isHorizontalTorso(state.lastPose, state.lockedSide)) {
+        state.ctx.fillText(`Torso: HORIZONTAL`, 10, 110);
+      }
+    }
   }
-  
+
   const side = state.testStage === "IDLE" ? state.activeTrackingSide : state.lockedSide;
 
   if (state.testStage === "RUNNING" && side !== "unknown") {
     const idx = side === "left" ? CONFIG.LEFT : CONFIG.RIGHT;
     const wrist = state.lastPose[idx.WRIST];
     drawDot(wrist, true, "#10b981");
-    
+
     const inZone = isWristInFloorZone(state.lastPose, side);
     drawParkingLine(state.lastPose, side, inZone);
   } else {
@@ -645,12 +1130,10 @@ function drawOverlay() {
     const lY = lWrist?.y || 0;
     const rY = rWrist?.y || 0;
     const lowest = lY > rY ? "left" : "right";
-    
     const color = "#fbbf24";
 
     drawDot(lWrist, lowest==="left", color);
     drawDot(rWrist, lowest==="right", color);
-    
     drawParkingLine(state.lastPose, lowest, isWristInFloorZone(state.lastPose, lowest));
   }
 }
@@ -659,7 +1142,7 @@ function drawParkingLine(pose, side, isActive) {
   const idx = side === "left" ? CONFIG.LEFT : CONFIG.RIGHT;
   const knee = pose[idx.KNEE];
   if (!knee) return;
-  
+
   const y = knee.y * state.canvas.height;
   state.ctx.beginPath();
   state.ctx.strokeStyle = isActive ? "#10b981" : "rgba(255,255,255,0.2)";
@@ -671,8 +1154,10 @@ function drawParkingLine(pose, side, isActive) {
 
 function drawDot(landmark, big, color) {
   if (!landmark) return;
+
   const x = landmark.x * state.canvas.width;
   const y = landmark.y * state.canvas.height;
+
   state.ctx.beginPath();
   state.ctx.fillStyle = color;
   state.ctx.arc(x, y, big ? 8 : 5, 0, 2*Math.PI);
@@ -680,31 +1165,100 @@ function drawDot(landmark, big, color) {
 }
 
 // ============================================
+// SESSION MANAGEMENT
+// ============================================
+
+function resetSession() {
+  state.session = { currentSet: null, history: [] };
+  state.cleanHistory = [];
+  state.pressHistory = [];
+  state.snatchHistory = [];
+  state.swingHistory = [];
+  state.rowHistory = [];
+
+  state.cleanBaseline = 0;
+  state.pressBaseline = 0;
+  state.snatchBaseline = 0;
+  state.swingBaseline = 0;
+  state.rowBaseline = 0;
+
+  state.testStage = "IDLE";
+  state.lockedSide = "unknown";
+  state.activeTrackingSide = "left";
+  state.armingSide = null;
+  state.smoothedVelocity = 0;
+  state.smoothedVy = 0;
+  state.lastSpeed = 0;
+  state.lastVy = 0;
+  state.lockedCalibration = null;
+  state.prevWrist = null;
+  state.phase = "IDLE";
+  state.currentRepPeak = 0;
+  state.overheadHoldCount = 0;
+  state.parkingConfirmed = false;
+  state.currentRepPeakWristY = 1.0;
+  state.currentRepPeakWristX = 0.5;
+  state.endingConfirmCount = 0;
+  state.repStartedFrom = null;
+  state.repStartY = null;
+
+  if (state.video && state.video.src) {
+    state.video.pause();
+    state.video.currentTime = 0;
+  }
+
+  const countEls = ['val-cleans', 'val-presses', 'val-snatches', 'val-swings', 'val-rows', 'val-total-reps'];
+  countEls.forEach(id => {
+    const el = document.getElementById(id);
+    if (el) el.textContent = '0';
+  });
+
+  const velEls = ['val-clean-velocity', 'val-press-velocity', 'val-snatch-velocity', 'val-swing-velocity', 'val-row-velocity', 'val-velocity'];
+  velEls.forEach(id => {
+    const el = document.getElementById(id);
+    if (el) el.textContent = '0.00';
+  });
+
+  const dropEls = ['val-clean-drop', 'val-press-drop', 'val-snatch-drop', 'val-swing-drop', 'val-row-drop'];
+  dropEls.forEach(id => {
+    const el = document.getElementById(id);
+    if (el) {
+      el.textContent = '--';
+      el.style.color = '#fff';
+    }
+  });
+
+  resetMovementDisplay();
+  setStatus("Session Cleared — Ready", "#3b82f6");
+
+  if (CONFIG.DEBUG_MODE) {
+    console.log("🔄 Session Reset - All state cleared");
+  }
+}
+
+// ============================================
 // EXPORT
 // ============================================
+
 async function exportToMake() {
   const history = state.session.history;
-  
   if (!history.length) {
     alert("No completed sets to export.");
     return;
   }
 
-  const totalReps = history.reduce((sum, set) => sum + set.reps.length, 0);
-  const totalAvg = history.length > 0 ? 
-    (history.reduce((sum, set) => sum + parseFloat(set.avgVelocity), 0) / history.length) : 0;
-
   const payload = {
     athlete_id: "dad_ready_user",
-    session_date: new Date().toISOString(),
-    total_reps: totalReps,
-    session_avg_velocity: totalAvg.toFixed(2),
+    session_date: new Date().toISO String(),
     sets: history.map((set, index) => ({
       set_order: index + 1,
       hand: set.hand,
-      rep_count: set.reps.length,
-      peak_velocity_avg: parseFloat(set.avgVelocity),
-      raw_peaks: set.reps
+      cleans: set.cleans || [],
+      presses: set.presses || [],
+      snatches: set.snatches || [],
+      swings: set.swings || [],
+      rows: set.rows || [],
+      summary: set.summary || {}
     }))
   };
 
@@ -717,7 +1271,7 @@ async function exportToMake() {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload)
     });
-    
+
     if(response.ok) {
       setStatus("Success! Session Saved.", "#10b981");
     } else {
@@ -730,4 +1284,3 @@ async function exportToMake() {
 }
 
 initializeApp();
-
