@@ -1,6 +1,6 @@
 /**
- * VBT v3.6 - COMPLETE MOVEMENT DETECTION WITH ROWS
- * All movements: Clean, Press, Snatch, Swing, Row
+ * VBT v3.7 - POSE-BASED MOVEMENT DETECTION
+ * New logic: HINGE and RACK poses determine movement classification
  */
 
 import { PoseLandmarker, FilesetResolver } from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/vision_bundle.mjs";
@@ -34,9 +34,8 @@ const CONFIG = {
   LOCKOUT_VY_CUTOFF: 0.6,
   LOCKOUT_SPEED_CUTOFF: 2.0,
 
-  RESET_GRACE_MS_AFTER_LOCK: 5000,
-  HIKE_VY_THRESHOLD: 0.3,
-  HIKE_SPEED_THRESHOLD: 0.5,
+  HINGE_GRACE_MS: 5000,
+  RACK_LOCK_FRAMES: 30,  // ~1 second at 30fps
 
   BASELINE_REPS: 3,
   DROP_WARN: 15,
@@ -46,15 +45,23 @@ const CONFIG = {
   MIN_TRACK_CONF: 0.5,
 
   MOVEMENT: {
-    SNATCH_MIN_HEIGHT_ABOVE_SHOULDER: 0.02,
-    CLEAN_RACK_HEIGHT_MIN: -0.1,
-    CLEAN_RACK_HEIGHT_MAX: 0.15,
-    CLEAN_HORIZONTAL_PROXIMITY: 0.18,
-    SWING_MAX_HEIGHT_ABOVE_SHOULDER: 0.05,
-    SWING_MIN_HEIGHT_ABOVE_HIP: 0.1,
-    PRESS_VELOCITY_THRESHOLD: 2.5,
-    ROW_HORIZONTAL_PROXIMITY: 0.2,
-    HORIZONTAL_TORSO_THRESHOLD: 0.08
+    HINGE_THRESHOLD: 0.08,           // Shoulder-hip distance when hinged
+    KNEE_CROSS_THRESHOLD: 0.05,      // Wrist must be this much below knee
+
+    RACK_HEIGHT_MIN: -0.1,           // Rack position relative to shoulder
+    RACK_HEIGHT_MAX: 0.15,
+    RACK_HORIZONTAL_PROXIMITY: 0.18,
+
+    OVERHEAD_MIN_HEIGHT: 0.05,       // Above shoulder for overhead
+
+    SWING_MIN_ABOVE_HIP: 0.1,        // Swing must be above hip
+    SWING_MAX_ABOVE_SHOULDER: 0.05,  // But below shoulder
+
+    ROW_AT_HIP_TOLERANCE: 0.1,       // Row ends at hip level
+
+    HIP_CROSS_TOLERANCE: 0.05,       // For detecting hip crossing
+
+    BALLISTIC_VELOCITY: 2.5          // Press vs ballistic threshold
   },
 
   MAKE_WEBHOOK_URL: "https://hook.us2.make.com/0l88dnosrk2t8a29yfk83fej8hp8j3jk",
@@ -74,14 +81,20 @@ let state = {
   isModelLoaded: false,
   isVideoReady: false,
   isTestRunning: false,
-  testStage: "IDLE",
+
   timeMs: 0,
   lastPose: null,
 
-  activeTrackingSide: "left",
-  lockedSide: "unknown",
-  armingSide: null,
+  // Pose state
+  currentPose: "NONE",              // HINGE, RACK, OVERHEAD, NONE
+  poseLockedAt: 0,
+  poseFrameCount: 0,
 
+  // Side detection
+  lockedSide: "unknown",
+  activeTrackingSide: "left",
+
+  // Physics
   prevWrist: null,
   lockedCalibration: null,
   smoothedVelocity: 0,
@@ -89,40 +102,39 @@ let state = {
   lastSpeed: 0,
   lastVy: 0,
 
-  parkingConfirmed: false,
-  prevHeadY: 0,
-
-  phase: "IDLE",
+  // Movement tracking
+  phase: "IDLE",                    // IDLE, PULLING, LOCKED
+  movementStartPose: null,          // HINGE or RACK
   currentRepPeak: 0,
-  overheadHoldCount: 0,
+  peakWristY: 1.0,
 
+  // Hip crossing
+  wristAboveHip: false,
+  hipCrossedUpward: false,
+
+  // Session
   session: {
     currentSet: null,
     history: []
   },
 
-  repStartedFrom: null,
-  repStartY: null,
-  currentRepPeakWristY: 1.0,
-  currentRepPeakWristX: 0.5,
-
+  // History arrays
   cleanHistory: [],
   pressHistory: [],
   snatchHistory: [],
   swingHistory: [],
   rowHistory: [],
 
+  // Baselines
   cleanBaseline: 0,
   pressBaseline: 0,
   snatchBaseline: 0,
   swingBaseline: 0,
-  rowBaseline: 0,
-
-  endingConfirmCount: 0
+  rowBaseline: 0
 };
 
 // ============================================
-// INITIALIZATION
+// INITIALIZATION (unchanged from v3.6)
 // ============================================
 
 async function initializeApp() {
@@ -212,20 +224,10 @@ function onVideoReady() {
 async function toggleTest() {
   if (!state.isTestRunning) {
     state.isTestRunning = true;
-
-    if (state.testStage !== "RUNNING") {
-      state.testStage = "IDLE";
-    }
-
     document.getElementById("btn-start-test").textContent = "Pause Test";
     document.getElementById("btn-reset").disabled = false;
-
-    if (state.testStage === "IDLE") {
-      setStatus("Scanning: Park hand below knee...", "#fbbf24");
-      resetMovementDisplay();
-    } else {
-      setStatus("RESUMED: Test Running", "#10b981");
-    }
+    setStatus("Scanning for HINGE pose...", "#fbbf24");
+    resetMovementDisplay();
 
     if (state.video.paused) {
       try { await state.video.play(); } catch(e) {}
@@ -239,7 +241,7 @@ async function toggleTest() {
 }
 
 // ============================================
-// MASTER LOOP
+// MASTER LOOP (unchanged)
 // ============================================
 
 async function masterLoop(timestamp) {
@@ -271,188 +273,19 @@ async function masterLoop(timestamp) {
 
   if (state.isTestRunning) {
     runPhysics(pose, state.timeMs);
-
-    if (state.testStage === "IDLE") {
-      checkStartCondition(pose, state.timeMs);
-    }
-
-    if (state.testStage === "RUNNING") {
-      runMovementLogic(pose);
-      checkEndCondition(pose, state.timeMs);
-    }
+    updatePoseState(pose, state.timeMs);
+    runMovementLogic(pose, state.timeMs);
   }
 
   drawOverlay();
 }
 
 // ============================================
-// START/END CONDITIONS
-// ============================================
-
-function checkStartCondition(pose, timeMs) {
-  if (state.testStage !== "IDLE") return;
-
-  const lWrist = pose[CONFIG.LEFT.WRIST];
-  const rWrist = pose[CONFIG.RIGHT.WRIST];
-  if (!lWrist || !rWrist) return;
-
-  const lY = lWrist.y;
-  const rY = rWrist.y;
-  const activeSide = lY > rY ? "left" : "right";
-
-  state.activeTrackingSide = activeSide;
-
-  const inZone = isWristInFloorZone(pose, activeSide);
-  const hikingDown = state.lastVy > 0.3 && state.lastSpeed > 0.5;
-
-  if (CONFIG.DEBUG_MODE && inZone) {
-    console.log(`[START] Side:${activeSide} | Zone:${inZone} | Hike:${hikingDown} | Vy:${state.lastVy.toFixed(2)}`);
-  }
-
-  if (inZone && hikingDown) {
-    console.log(`🚀 STARTING SET: ${activeSide}`);
-    startNewSet(activeSide);
-  }
-}
-
-function checkEndCondition(pose, timeMs) {
-  if (state.testStage !== "RUNNING") return;
-  if (!state.session.currentSet) return;
-
-  const grace = timeMs - state.session.currentSet.lockedAtMs;
-
-  const INITIAL_GRACE_MS = 5000;
-  const totalReps = (state.cleanHistory.length || 0) + (state.pressHistory.length || 0) + (state.rowHistory.length || 0);
-  if (grace < INITIAL_GRACE_MS && totalReps === 0) {
-    return;
-  }
-
-  if (grace < CONFIG.RESET_GRACE_MS_AFTER_LOCK) return;
-
-  if (state.phase === "CONCENTRIC") return;
-
-  // Don't end set if doing rows (horizontal torso)
-  if (isHorizontalTorso(pose, state.lockedSide)) {
-    return;
-  }
-
-  const sideIdx = state.lockedSide === "left" ? CONFIG.LEFT : CONFIG.RIGHT;
-  const wrist = pose[sideIdx.WRIST];
-  if (!wrist) return;
-
-  const inZone = isWristInFloorZone(pose, state.lockedSide);
-  const standingUp = state.lastVy < -0.3 && state.lastSpeed > 0.5;
-
-  if (!state.endingConfirmCount) state.endingConfirmCount = 0;
-
-  if (inZone && standingUp) {
-    state.endingConfirmCount++;
-
-    if (state.endingConfirmCount >= 2) {
-      console.log(`🛑 ENDING SET (${state.cleanHistory.length} cleans, ${state.pressHistory.length} presses, ${state.rowHistory.length} rows)`);
-      state.endingConfirmCount = 0;
-      endCurrentSet();
-    }
-  } else {
-    state.endingConfirmCount = 0;
-  }
-}
-
-// ============================================
-// SET MANAGEMENT
-// ============================================
-
-function startNewSet(side) {
-  state.lockedSide = side;
-  state.testStage = "RUNNING";
-  state.lockedAtMs = state.timeMs;
-
-  state.cleanHistory = [];
-  state.pressHistory = [];
-  state.snatchHistory = [];
-  state.swingHistory = [];
-  state.rowHistory = [];
-
-  state.cleanBaseline = 0;
-  state.pressBaseline = 0;
-  state.snatchBaseline = 0;
-  state.swingBaseline = 0;
-  state.rowBaseline = 0;
-
-  state.currentRepPeak = 0;
-  state.overheadHoldCount = 0;
-  state.endingConfirmCount = 0;
-
-  state.phase = "IDLE";
-  state.repStartedFrom = null;
-  state.repStartY = null;
-
-  state.session.currentSet = {
-    id: state.session.history.length + 1,
-    hand: side,
-    cleans: [],
-    presses: [],
-    snatches: [],
-    swings: [],
-    rows: [],
-    startTime: new Date(),
-    lockedAtMs: state.timeMs
-  };
-
-  const countEls = ['val-cleans', 'val-presses', 'val-snatches', 'val-swings', 'val-rows', 'val-total-reps'];
-  countEls.forEach(id => {
-    const el = document.getElementById(id);
-    if (el) el.textContent = '0';
-  });
-
-  const velEls = ['val-clean-velocity', 'val-press-velocity', 'val-snatch-velocity', 'val-swing-velocity', 'val-row-velocity'];
-  velEls.forEach(id => {
-    const el = document.getElementById(id);
-    if (el) el.textContent = '0.00';
-  });
-
-  setStatus(`LOCKED: ${side.toUpperCase()}`, "#10b981");
-
-  if (CONFIG.DEBUG_MODE) console.log(`🚀 Set Started [${side}]`);
-}
-
-function endCurrentSet() {
-  if (state.session.currentSet) {
-    state.session.currentSet.endTime = new Date();
-
-    const cleanCount = state.session.currentSet.cleans.length;
-    const pressCount = state.session.currentSet.presses.length;
-    const snatchCount = state.session.currentSet.snatches.length;
-    const swingCount = state.session.currentSet.swings.length;
-    const rowCount = state.session.currentSet.rows.length;
-
-    state.session.currentSet.summary = {
-      total_cleans: cleanCount,
-      floor_cleans: state.session.currentSet.cleans.filter(c => c.type === 'CLEAN_FROM_FLOOR').length,
-      re_cleans: state.session.currentSet.cleans.filter(c => c.type === 'RE_CLEAN').length,
-      total_presses: pressCount,
-      total_snatches: snatchCount,
-      total_swings: swingCount,
-      total_rows: rowCount
-    };
-
-    state.session.history.push(state.session.currentSet);
-  }
-
-  state.testStage = "IDLE";
-  state.lockedSide = "unknown";
-  state.session.currentSet = null;
-  state.activeTrackingSide = "left";
-
-  setStatus("Set Saved. Park to start next.", "#3b82f6");
-}
-
-// ============================================
-// PHYSICS ENGINE
+// PHYSICS ENGINE (unchanged from v3.6)
 // ============================================
 
 function runPhysics(pose, timeMs) {
-  const side = state.testStage === "IDLE" ? state.activeTrackingSide : state.lockedSide;
+  const side = state.lockedSide === "unknown" ? state.activeTrackingSide : state.lockedSide;
   if (!side || side === "unknown") return;
 
   const idx = side === "left" ? CONFIG.LEFT : CONFIG.RIGHT;
@@ -502,223 +335,277 @@ function runPhysics(pose, timeMs) {
 
   state.prevWrist = { x: wrist.x, y: wrist.y, t: timeMs };
 
-  if (state.testStage === "RUNNING") {
+  if (state.lockedSide !== "unknown") {
     document.getElementById("val-velocity").textContent = state.lastSpeed.toFixed(2);
   }
 }
 
 // ============================================
-// POSITION HELPERS
+// POSE DETECTION HELPERS
 // ============================================
 
-function isHorizontalTorso(pose, side) {
+function isHinged(pose, side) {
   const idx = side === "left" ? CONFIG.LEFT : CONFIG.RIGHT;
   const shoulder = pose[idx.SHOULDER];
   const hip = pose[idx.HIP];
 
   if (!shoulder || !hip) return false;
 
-  // Shoulder and hip at nearly same Y level (horizontal torso)
-  return Math.abs(shoulder.y - hip.y) < CONFIG.MOVEMENT.HORIZONTAL_TORSO_THRESHOLD;
+  // Hinged when shoulder-hip vertical distance is small
+  const verticalDist = Math.abs(shoulder.y - hip.y);
+  return verticalDist < CONFIG.MOVEMENT.HINGE_THRESHOLD;
 }
 
-function getWristZone(pose, side) {
+function isWristBelowKnee(pose, side) {
   const idx = side === "left" ? CONFIG.LEFT : CONFIG.RIGHT;
   const wrist = pose[idx.WRIST];
-  const hip = pose[idx.HIP];
-  const shoulder = pose[idx.SHOULDER];
   const knee = pose[idx.KNEE];
 
-  if (!wrist || !hip || !shoulder || !knee) return 'UNKNOWN';
+  if (!wrist || !knee) return false;
+
+  return wrist.y > (knee.y + CONFIG.MOVEMENT.KNEE_CROSS_THRESHOLD);
+}
+
+function isWristAtRack(pose, side) {
+  const idx = side === "left" ? CONFIG.LEFT : CONFIG.RIGHT;
+  const wrist = pose[idx.WRIST];
+  const shoulder = pose[idx.SHOULDER];
+
+  if (!wrist || !shoulder) return false;
 
   const lShoulder = pose[CONFIG.LEFT.SHOULDER];
   const rShoulder = pose[CONFIG.RIGHT.SHOULDER];
   const torsoCenter = (lShoulder.x + rShoulder.x) / 2;
   const horizontalDist = Math.abs(wrist.x - torsoCenter);
-  const isCloseToTorso = horizontalDist < CONFIG.MOVEMENT.CLEAN_HORIZONTAL_PROXIMITY;
 
-  if (wrist.y < (shoulder.y - CONFIG.MOVEMENT.SNATCH_MIN_HEIGHT_ABOVE_SHOULDER)) {
+  const atShoulderHeight = wrist.y >= (shoulder.y + CONFIG.MOVEMENT.RACK_HEIGHT_MIN) && 
+                           wrist.y <= (shoulder.y + CONFIG.MOVEMENT.RACK_HEIGHT_MAX);
+  const nearMidline = horizontalDist < CONFIG.MOVEMENT.RACK_HORIZONTAL_PROXIMITY;
+
+  return atShoulderHeight && nearMidline;
+}
+
+function getWristHeightZone(pose, side) {
+  const idx = side === "left" ? CONFIG.LEFT : CONFIG.RIGHT;
+  const wrist = pose[idx.WRIST];
+  const shoulder = pose[idx.SHOULDER];
+  const hip = pose[idx.HIP];
+
+  if (!wrist || !shoulder || !hip) return 'UNKNOWN';
+
+  // Overhead
+  if (wrist.y < (shoulder.y - CONFIG.MOVEMENT.OVERHEAD_MIN_HEIGHT)) {
     return 'OVERHEAD';
   }
 
-  // NEW: Ribcage zone for rows (between shoulder and hip, horizontal torso)
-  if (wrist.y > shoulder.y && wrist.y < hip.y && 
-      horizontalDist < CONFIG.MOVEMENT.ROW_HORIZONTAL_PROXIMITY && 
-      isHorizontalTorso(pose, side)) {
-    return 'RIBCAGE';
+  // At shoulder (rack area)
+  if (wrist.y >= (shoulder.y - CONFIG.MOVEMENT.OVERHEAD_MIN_HEIGHT) && 
+      wrist.y <= (shoulder.y + CONFIG.MOVEMENT.RACK_HEIGHT_MAX)) {
+    return 'SHOULDER';
   }
 
-  if (wrist.y >= (shoulder.y + CONFIG.MOVEMENT.CLEAN_RACK_HEIGHT_MIN) && 
-      wrist.y <= (shoulder.y + CONFIG.MOVEMENT.CLEAN_RACK_HEIGHT_MAX) && 
-      isCloseToTorso) {
-    return 'RACK';
+  // Between shoulder and hip (swing zone)
+  if (wrist.y > (shoulder.y + CONFIG.MOVEMENT.RACK_HEIGHT_MAX) && wrist.y < hip.y) {
+    return 'MID';
   }
 
-  if (wrist.y > hip.y && wrist.y <= knee.y) {
-    return 'BACKSWING';
+  // At hip
+  if (Math.abs(wrist.y - hip.y) < CONFIG.MOVEMENT.ROW_AT_HIP_TOLERANCE) {
+    return 'HIP';
   }
 
-  if (wrist.y > knee.y) {
-    return 'FLOOR';
-  }
-
-  return 'TRANSITION';
+  // Below hip
+  return 'LOW';
 }
 
-function isWristInFloorZone(pose, side) {
+function isWristNearMidline(pose, side) {
   const idx = side === "left" ? CONFIG.LEFT : CONFIG.RIGHT;
   const wrist = pose[idx.WRIST];
-  const knee = pose[idx.KNEE];
-  if (!wrist || !knee) return false;
-  return wrist.y > knee.y;
+
+  const lShoulder = pose[CONFIG.LEFT.SHOULDER];
+  const rShoulder = pose[CONFIG.RIGHT.SHOULDER];
+  const torsoCenter = (lShoulder.x + rShoulder.x) / 2;
+  const horizontalDist = Math.abs(wrist.x - torsoCenter);
+
+  return horizontalDist < CONFIG.MOVEMENT.RACK_HORIZONTAL_PROXIMITY;
 }
 
 // ============================================
-// MOVEMENT DETECTION LOGIC
+// POSE STATE MACHINE
 // ============================================
 
-function runMovementLogic(pose) {
-  const v = state.smoothedVelocity;
-  const vy = state.smoothedVy;
-  const idx = state.lockedSide === "left" ? CONFIG.LEFT : CONFIG.RIGHT;
+function updatePoseState(pose, timeMs) {
+  const side = state.lockedSide === "unknown" ? state.activeTrackingSide : state.lockedSide;
+
+  // Determine active side if not locked
+  if (state.lockedSide === "unknown") {
+    const lWrist = pose[CONFIG.LEFT.WRIST];
+    const rWrist = pose[CONFIG.RIGHT.WRIST];
+    if (lWrist && rWrist) {
+      state.activeTrackingSide = lWrist.y > rWrist.y ? "left" : "right";
+    }
+  }
+
+  // Check for HINGE pose (set start)
+  if (state.currentPose === "NONE" && isWristBelowKnee(pose, side)) {
+    state.currentPose = "HINGE";
+    state.poseLockedAt = timeMs;
+    state.lockedSide = side;
+
+    if (!state.session.currentSet) {
+      startNewSet(side, timeMs);
+    }
+
+    if (CONFIG.DEBUG_MODE) console.log(`✓ HINGE locked [${side}]`);
+    setStatus(`HINGE locked [${side.toUpperCase()}]`, "#10b981");
+  }
+
+  // Check for RACK pose (needs sustained hold)
+  if (isWristAtRack(pose, side) && !isHinged(pose, side)) {
+    if (state.currentPose !== "RACK") {
+      state.poseFrameCount = 0;
+    }
+    state.poseFrameCount++;
+
+    if (state.poseFrameCount >= CONFIG.RACK_LOCK_FRAMES && state.currentPose !== "RACK") {
+      state.currentPose = "RACK";
+      state.poseLockedAt = timeMs;
+      if (CONFIG.DEBUG_MODE) console.log(`✓ RACK locked`);
+    }
+  } else {
+    if (state.currentPose === "RACK") {
+      // Left rack
+      state.currentPose = "NONE";
+      state.poseFrameCount = 0;
+    }
+  }
+
+  // Check for set ending (standing from hinge with grace period)
+  if (state.session.currentSet) {
+    const graceExpired = (timeMs - state.poseLockedAt) > CONFIG.HINGE_GRACE_MS;
+
+    if (graceExpired && !isHinged(pose, side) && !isWristBelowKnee(pose, side) && state.lastVy < -0.3) {
+      // Standing up after grace period
+      if (CONFIG.DEBUG_MODE) console.log(`🛑 Set ended - standing detected`);
+      endCurrentSet();
+    }
+  }
+}
+
+// ============================================
+// MOVEMENT DETECTION LOGIC - NEW POSE-BASED
+// ============================================
+
+function runMovementLogic(pose, timeMs) {
+  if (!state.session.currentSet) return;
+
+  const side = state.lockedSide;
+  if (side === "unknown") return;
+
+  const idx = side === "left" ? CONFIG.LEFT : CONFIG.RIGHT;
   const wrist = pose[idx.WRIST];
   const hip = pose[idx.HIP];
-  const shoulder = pose[idx.SHOULDER];
-  const knee = pose[idx.KNEE];
+  if (!wrist || !hip) return;
 
-  if (!wrist || !hip || !shoulder || !knee) return;
+  const v = state.smoothedVelocity;
+  const vy = state.smoothedVy;
+  const isStable = Math.abs(vy) < CONFIG.LOCKOUT_VY_CUTOFF && v < CONFIG.LOCKOUT_SPEED_CUTOFF;
+  const heightZone = getWristHeightZone(pose, side);
+  const hinged = isHinged(pose, side);
+  const nearMidline = isWristNearMidline(pose, side);
 
-  const zone = getWristZone(pose, state.lockedSide);
+  // Track hip crossing
+  const currentlyAboveHip = wrist.y < hip.y;
+  if (currentlyAboveHip && !state.wristAboveHip) {
+    state.hipCrossedUpward = true;
+  }
+  state.wristAboveHip = currentlyAboveHip;
 
-  // PHASE: IDLE/LOCKOUT - Waiting for next movement
-  if (state.phase === "IDLE" || state.phase === "LOCKOUT") {
-
-    if (zone === 'FLOOR') {
-      state.phase = "BOTTOM";
-      state.repStartedFrom = "FLOOR";
-      state.repStartY = wrist.y;
-      state.overheadHoldCount = 0;
+  // IDLE - waiting for movement to start
+  if (state.phase === "IDLE") {
+    if (state.currentPose === "HINGE" && vy < -0.4) {
+      state.phase = "PULLING";
+      state.movementStartPose = "HINGE";
       state.currentRepPeak = 0;
-      state.currentRepPeakWristY = 1.0;
-      state.currentRepPeakWristX = wrist.x;
+      state.peakWristY = wrist.y;
+      state.hipCrossedUpward = false;
+      state.wristAboveHip = wrist.y < hip.y;
 
-      if (CONFIG.DEBUG_MODE) console.log("Phase: BOTTOM (from FLOOR)");
+      if (CONFIG.DEBUG_MODE) console.log(`→ PULLING from HINGE`);
     }
-
-    else if (zone === 'BACKSWING') {
-      state.phase = "BOTTOM";
-      state.repStartedFrom = "RACK";
-      state.repStartY = wrist.y;
-      state.overheadHoldCount = 0;
+    else if (state.currentPose === "RACK" && Math.abs(vy) > 0.4) {
+      state.phase = "PULLING";
+      state.movementStartPose = "RACK";
       state.currentRepPeak = 0;
-      state.currentRepPeakWristY = 1.0;
-      state.currentRepPeakWristX = wrist.x;
+      state.peakWristY = wrist.y;
+      state.hipCrossedUpward = false;
+      state.wristAboveHip = wrist.y < hip.y;
 
-      if (CONFIG.DEBUG_MODE) console.log("Phase: BOTTOM (from RACK)");
-    }
-
-    // Detect press starting from rack
-    else if (zone === 'RACK' && vy < -0.4) {
-      state.phase = "CONCENTRIC";
-      state.currentRepPeak = 0;
-      if (CONFIG.DEBUG_MODE) console.log("Phase: CONCENTRIC (press from rack)");
+      if (CONFIG.DEBUG_MODE) console.log(`→ PULLING from RACK`);
     }
   }
 
-  // PHASE: BOTTOM - Waiting for upward pull
-  else if (state.phase === "BOTTOM") {
-    if (zone !== 'FLOOR' && zone !== 'BACKSWING' && vy < -0.4) {
-      state.phase = "CONCENTRIC";
-      if (CONFIG.DEBUG_MODE) console.log("Phase: CONCENTRIC");
-    }
-  }
-
-  // PHASE: CONCENTRIC - Tracking upward movement
-  else if (state.phase === "CONCENTRIC") {
+  // PULLING - track peak velocity and detect lockout
+  else if (state.phase === "PULLING") {
     if (v > state.currentRepPeak) state.currentRepPeak = v;
+    if (wrist.y < state.peakWristY) state.peakWristY = wrist.y;
 
-    if (wrist.y < state.currentRepPeakWristY) {
-      state.currentRepPeakWristY = wrist.y;
-      state.currentRepPeakWristX = wrist.x;
-    }
+    // Check for lockout at different heights
+    if (isStable) {
 
-    const isStable = Math.abs(vy) < CONFIG.LOCKOUT_VY_CUTOFF && v < CONFIG.LOCKOUT_SPEED_CUTOFF;
+      // From HINGE - can be Clean, Swing, Snatch, or Row
+      if (state.movementStartPose === "HINGE") {
 
-    // RACK LOCKOUT - Clean detection
-    if (zone === 'RACK' && isStable) {
-      state.overheadHoldCount++;
-
-      if (state.overheadHoldCount >= 2) {
-        if (state.repStartedFrom === "FLOOR") {
-          // Only count if wrist went UP (Y decreased significantly)
-          if (wrist.y < (state.repStartY - 0.2)) {
-            recordClean(pose, "CLEAN_FROM_FLOOR");
-          }
-        } else if (state.repStartedFrom === "RACK") {
-          recordClean(pose, "RE_CLEAN");
-        }
-
-        state.phase = "LOCKOUT";
-        state.overheadHoldCount = 0;
-      }
-    }
-
-    // OVERHEAD LOCKOUT - Press or Snatch
-    else if (zone === 'OVERHEAD' && isStable) {
-      state.overheadHoldCount++;
-
-      if (state.overheadHoldCount >= 2) {
-        if (state.currentRepPeak < CONFIG.MOVEMENT.PRESS_VELOCITY_THRESHOLD) {
-          recordPress(pose);
-        } else {
+        // OVERHEAD = Snatch
+        if (heightZone === 'OVERHEAD') {
           recordSnatch(pose);
+          state.phase = "LOCKED";
         }
 
-        state.phase = "LOCKOUT";
-        state.overheadHoldCount = 0;
-      }
-    }
+        // SHOULDER + midline + standing = Clean
+        else if (heightZone === 'SHOULDER' && nearMidline && !hinged && state.hipCrossedUpward) {
+          recordClean(pose, "CLEAN_FROM_FLOOR");
+          state.phase = "LOCKED";
+        }
 
-    // RIBCAGE LOCKOUT - Row detection (NEW)
-    // In CONCENTRIC phase
-else if (zone === 'RIBCAGE' && isStable && isHorizontalTorso(pose, state.lockedSide)) {
-  // Row ONLY if torso is STILL horizontal at lockout
-  recordRow(pose);
-  state.phase = "LOCKOUT";
-}
-
-
-    // SWING DETECTION - Shoulder height lockout (not rack, not overhead)
-    else if (isStable && state.repStartedFrom === "FLOOR") {
-      const heightAboveShoulder = shoulder.y - wrist.y;
-      const heightAboveHip = hip.y - wrist.y;
-
-      if (heightAboveShoulder < CONFIG.MOVEMENT.SWING_MAX_HEIGHT_ABOVE_SHOULDER &&
-          heightAboveShoulder >= -0.1 &&
-          heightAboveHip >= CONFIG.MOVEMENT.SWING_MIN_HEIGHT_ABOVE_HIP &&
-          state.currentRepPeak >= CONFIG.MOVEMENT.PRESS_VELOCITY_THRESHOLD) {
-
-        state.overheadHoldCount++;
-
-        if (state.overheadHoldCount >= 2) {
+        // MID (between hip and shoulder) = Swing
+        else if (heightZone === 'MID' && state.hipCrossedUpward) {
           recordSwing(pose);
-          state.phase = "LOCKOUT";
-          state.overheadHoldCount = 0;
+          state.phase = "LOCKED";
+        }
+
+        // HIP + hinged + no hip cross = Row
+        else if (heightZone === 'HIP' && hinged && !state.hipCrossedUpward) {
+          recordRow(pose);
+          state.phase = "LOCKED";
         }
       }
-    }
 
-    else {
-      state.overheadHoldCount = 0;
+      // From RACK - can be Press or Re-clean
+      else if (state.movementStartPose === "RACK") {
+
+        // OVERHEAD = Press
+        if (heightZone === 'OVERHEAD') {
+          recordPress(pose);
+          state.phase = "LOCKED";
+        }
+
+        // Back to SHOULDER after dip = Re-clean
+        else if (heightZone === 'SHOULDER' && nearMidline && state.hipCrossedUpward) {
+          recordClean(pose, "RE_CLEAN");
+          state.phase = "LOCKED";
+        }
+      }
     }
   }
 
-  // PHASE: LOCKOUT - Waiting for next movement or set end
-  else if (state.phase === "LOCKOUT") {
-    if (zone === 'BACKSWING' || zone === 'FLOOR') {
+  // LOCKED - movement complete, wait for next
+  else if (state.phase === "LOCKED") {
+    // Reset to idle when returning to start position
+    if (isWristBelowKnee(pose, side) || (state.currentPose === "RACK")) {
       state.phase = "IDLE";
-      state.repStartedFrom = null;
-      state.repStartY = null;
+      state.movementStartPose = null;
+      if (CONFIG.DEBUG_MODE) console.log(`← IDLE (ready for next)`);
     }
   }
 }
@@ -935,7 +822,92 @@ function recordRow(pose) {
 }
 
 // ============================================
-// UI UPDATES
+// SET MANAGEMENT
+// ============================================
+
+function startNewSet(side, timeMs) {
+  state.lockedSide = side;
+  state.poseLockedAt = timeMs;
+
+  state.cleanHistory = [];
+  state.pressHistory = [];
+  state.snatchHistory = [];
+  state.swingHistory = [];
+  state.rowHistory = [];
+
+  state.cleanBaseline = 0;
+  state.pressBaseline = 0;
+  state.snatchBaseline = 0;
+  state.swingBaseline = 0;
+  state.rowBaseline = 0;
+
+  state.currentRepPeak = 0;
+  state.phase = "IDLE";
+  state.movementStartPose = null;
+
+  state.session.currentSet = {
+    id: state.session.history.length + 1,
+    hand: side,
+    cleans: [],
+    presses: [],
+    snatches: [],
+    swings: [],
+    rows: [],
+    startTime: new Date()
+  };
+
+  const countEls = ['val-cleans', 'val-presses', 'val-snatches', 'val-swings', 'val-rows', 'val-total-reps'];
+  countEls.forEach(id => {
+    const el = document.getElementById(id);
+    if (el) el.textContent = '0';
+  });
+
+  const velEls = ['val-clean-velocity', 'val-press-velocity', 'val-snatch-velocity', 'val-swing-velocity', 'val-row-velocity'];
+  velEls.forEach(id => {
+    const el = document.getElementById(id);
+    if (el) el.textContent = '0.00';
+  });
+
+  const dropEls = ['val-clean-drop', 'val-press-drop', 'val-snatch-drop', 'val-swing-drop', 'val-row-drop'];
+  dropEls.forEach(id => {
+    const el = document.getElementById(id);
+    if (el) {
+      el.textContent = '--';
+      el.style.color = '#fff';
+    }
+  });
+
+  if (CONFIG.DEBUG_MODE) console.log(`🚀 Set Started [${side}]`);
+}
+
+function endCurrentSet() {
+  if (state.session.currentSet) {
+    state.session.currentSet.endTime = new Date();
+
+    state.session.currentSet.summary = {
+      total_cleans: state.session.currentSet.cleans.length,
+      floor_cleans: state.session.currentSet.cleans.filter(c => c.type === 'CLEAN_FROM_FLOOR').length,
+      re_cleans: state.session.currentSet.cleans.filter(c => c.type === 'RE_CLEAN').length,
+      total_presses: state.session.currentSet.presses.length,
+      total_snatches: state.session.currentSet.snatches.length,
+      total_swings: state.session.currentSet.swings.length,
+      total_rows: state.session.currentSet.rows.length
+    };
+
+    state.session.history.push(state.session.currentSet);
+  }
+
+  state.lockedSide = "unknown";
+  state.session.currentSet = null;
+  state.activeTrackingSide = "left";
+  state.currentPose = "NONE";
+  state.phase = "IDLE";
+
+  setStatus("Set Saved. Enter HINGE to start next.", "#3b82f6");
+}
+
+// ============================================
+// UI UPDATES (unchanged from v3.6)
 // ============================================
 
 function updateCleanDisplay(count, velocity, drop, dropColor) {
@@ -1039,7 +1011,7 @@ function updateMovementDisplay(movementType) {
   } else if (movementType.includes('PRESS')) {
     movementEl.classList.add('press');
   } else if (movementType.includes('ROW')) {
-    movementEl.classList.add('press');  // Use press color for rows
+    movementEl.classList.add('press');
   }
 
   configEl.textContent = 'Single Kettlebell';
@@ -1088,7 +1060,7 @@ function setStatus(text, color) {
 }
 
 // ============================================
-// DRAWING
+// DRAWING (updated to show pose state)
 // ============================================
 
 function drawOverlay() {
@@ -1097,57 +1069,51 @@ function drawOverlay() {
   if (CONFIG.DEBUG_MODE) {
     state.ctx.fillStyle = "#fbbf24";
     state.ctx.font = "12px monospace";
-    state.ctx.fillText(`Side: ${state.testStage === "IDLE" ? state.activeTrackingSide : state.lockedSide}`, 10, 20);
-    state.ctx.fillText(`Speed: ${state.lastSpeed.toFixed(2)} m/s`, 10, 35);
-    state.ctx.fillText(`Vy: ${state.lastVy.toFixed(2)} m/s`, 10, 50);
-    state.ctx.fillText(`Stage: ${state.testStage}`, 10, 65);
-    state.ctx.fillText(`Phase: ${state.phase}`, 10, 80);
+    state.ctx.fillText(`Side: ${state.lockedSide}`, 10, 20);
+    state.ctx.fillText(`Pose: ${state.currentPose}`, 10, 35);
+    state.ctx.fillText(`Phase: ${state.phase}`, 10, 50);
+    state.ctx.fillText(`Speed: ${state.lastSpeed.toFixed(2)} m/s`, 10, 65);
+    state.ctx.fillText(`Vy: ${state.lastVy.toFixed(2)} m/s`, 10, 80);
 
-    if (state.testStage === "RUNNING") {
-      const zone = getWristZone(state.lastPose, state.lockedSide);
+    if (state.lockedSide !== "unknown") {
+      const zone = getWristHeightZone(state.lastPose, state.lockedSide);
+      const hinged = isHinged(state.lastPose, state.lockedSide);
       state.ctx.fillText(`Zone: ${zone}`, 10, 95);
-
-      if (isHorizontalTorso(state.lastPose, state.lockedSide)) {
-        state.ctx.fillText(`Torso: HORIZONTAL`, 10, 110);
-      }
+      state.ctx.fillText(`Hinged: ${hinged}`, 10, 110);
+      state.ctx.fillText(`Hip Cross: ${state.hipCrossedUpward}`, 10, 125);
     }
   }
 
-  const side = state.testStage === "IDLE" ? state.activeTrackingSide : state.lockedSide;
+  const side = state.lockedSide === "unknown" ? state.activeTrackingSide : state.lockedSide;
 
-  if (state.testStage === "RUNNING" && side !== "unknown") {
+  if (state.lockedSide !== "unknown") {
     const idx = side === "left" ? CONFIG.LEFT : CONFIG.RIGHT;
     const wrist = state.lastPose[idx.WRIST];
+    const knee = state.lastPose[idx.KNEE];
+
+    // Draw wrist
     drawDot(wrist, true, "#10b981");
 
-    const inZone = isWristInFloorZone(state.lastPose, side);
-    drawParkingLine(state.lastPose, side, inZone);
+    // Draw knee line (HINGE detection line)
+    if (knee) {
+      const y = knee.y * state.canvas.height;
+      state.ctx.beginPath();
+      state.ctx.strokeStyle = state.currentPose === "HINGE" ? "#10b981" : "rgba(255,255,255,0.2)";
+      state.ctx.lineWidth = 2;
+      state.ctx.moveTo(0, y);
+      state.ctx.lineTo(state.canvas.width, y);
+      state.ctx.stroke();
+    }
   } else {
     const lWrist = state.lastPose[CONFIG.LEFT.WRIST];
     const rWrist = state.lastPose[CONFIG.RIGHT.WRIST];
     const lY = lWrist?.y || 0;
     const rY = rWrist?.y || 0;
     const lowest = lY > rY ? "left" : "right";
-    const color = "#fbbf24";
 
-    drawDot(lWrist, lowest==="left", color);
-    drawDot(rWrist, lowest==="right", color);
-    drawParkingLine(state.lastPose, lowest, isWristInFloorZone(state.lastPose, lowest));
+    drawDot(lWrist, lowest==="left", "#fbbf24");
+    drawDot(rWrist, lowest==="right", "#fbbf24");
   }
-}
-
-function drawParkingLine(pose, side, isActive) {
-  const idx = side === "left" ? CONFIG.LEFT : CONFIG.RIGHT;
-  const knee = pose[idx.KNEE];
-  if (!knee) return;
-
-  const y = knee.y * state.canvas.height;
-  state.ctx.beginPath();
-  state.ctx.strokeStyle = isActive ? "#10b981" : "rgba(255,255,255,0.2)";
-  state.ctx.lineWidth = 2;
-  state.ctx.moveTo(0, y);
-  state.ctx.lineTo(state.canvas.width, y);
-  state.ctx.stroke();
 }
 
 function drawDot(landmark, big, color) {
@@ -1180,10 +1146,11 @@ function resetSession() {
   state.swingBaseline = 0;
   state.rowBaseline = 0;
 
-  state.testStage = "IDLE";
+  state.currentPose = "NONE";
+  state.poseLockedAt = 0;
+  state.poseFrameCount = 0;
   state.lockedSide = "unknown";
   state.activeTrackingSide = "left";
-  state.armingSide = null;
   state.smoothedVelocity = 0;
   state.smoothedVy = 0;
   state.lastSpeed = 0;
@@ -1192,13 +1159,10 @@ function resetSession() {
   state.prevWrist = null;
   state.phase = "IDLE";
   state.currentRepPeak = 0;
-  state.overheadHoldCount = 0;
-  state.parkingConfirmed = false;
-  state.currentRepPeakWristY = 1.0;
-  state.currentRepPeakWristX = 0.5;
-  state.endingConfirmCount = 0;
-  state.repStartedFrom = null;
-  state.repStartY = null;
+  state.peakWristY = 1.0;
+  state.movementStartPose = null;
+  state.wristAboveHip = false;
+  state.hipCrossedUpward = false;
 
   if (state.video && state.video.src) {
     state.video.pause();
