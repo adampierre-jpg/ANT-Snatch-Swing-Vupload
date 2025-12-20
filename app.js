@@ -403,7 +403,7 @@ function drawDebugSkeleton(pose) {
     
     // Draw lines
     ctx.strokeStyle = color; 
-    ctx.lineWidth = 13;
+    ctx.lineWidth = 10;
     ctx.beginPath();
     ctx.moveTo(wrist.x * canvas.width, wrist.y * canvas.height);
     ctx.lineTo(elbow.x * canvas.width, elbow.y * canvas.height);
