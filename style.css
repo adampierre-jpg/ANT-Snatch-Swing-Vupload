@@ -4,104 +4,91 @@
     --text-main: #f8fafc;
     --accent: #3b82f6;
     --danger: #ef4444;
-    --success: #10b981;
 }
 
 * { box-sizing: border-box; margin: 0; padding: 0; font-family: -apple-system, system-ui, sans-serif; }
 
-/* Allow scrolling on body instead of hiding it */
+/* Force the app to stay within the screen limits */
 body { 
     background: var(--bg-color); 
     color: var(--text-main); 
-    min-height: 100vh;
-    /* Use dvh (dynamic viewport height) for modern mobile browsers */
-    min-height: 100dvh; 
+    height: 100vh;
+    height: 100dvh; 
+    overflow: hidden; /* Prevent the whole page from scrolling */
 }
 
 .app-container { 
     display: flex; 
     flex-direction: column; 
-    min-height: 100vh;
-    min-height: 100dvh;
+    height: 100%;
     max-width: 1200px; 
     margin: 0 auto; 
-    padding: 15px; 
+    padding: 10px; 
 }
 
-/* Header - Fixed size */
+/* Header - Stays at top */
 .main-header { 
     display: flex; 
     justify-content: space-between; 
     align-items: center; 
-    padding-bottom: 15px;
+    padding: 5px 0 10px;
     flex-shrink: 0;
 }
+.brand h1 { font-size: 1.2rem; }
+.total-reps-pill { background: var(--card-bg); padding: 4px 12px; border-radius: 20px; border: 1px solid #334155; }
 
-.brand h1 { font-size: 1.2rem; letter-spacing: -1px; }
-.accent { color: var(--accent); }
-.total-reps-pill { background: var(--card-bg); padding: 5px 12px; border-radius: 20px; border: 1px solid #334155; }
-.total-reps-pill .count { font-weight: bold; color: var(--accent); margin-left: 5px; }
-
-/* Video Container - Flexible but capped */
+/* Video Section - The "Flexible" Middle */
 .vision-container { 
     position: relative; 
     background: #000; 
     border-radius: 12px; 
     overflow: hidden; 
-    width: 100%;
-    /* Ensure it doesn't take over the whole screen on mobile */
-    max-height: 45vh; 
-    background-size: contain;
-    flex-shrink: 0;
+    flex: 1; /* This takes up all available space between header and stats */
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 0; /* Critical for flex items to shrink correctly */
 }
 
-#canvas { width: 100%; height: 100%; object-fit: contain; display: block; }
+#canvas { 
+    max-width: 100%; 
+    max-height: 100%; 
+    object-fit: contain; /* Ensures full video frame is seen, no matter the aspect ratio */
+}
 
 .movement-overlay { position: absolute; top: 10px; left: 10px; pointer-events: none; }
-#detected-movement { background: var(--accent); padding: 2px 8px; border-radius: 4px; font-weight: bold; font-size: 0.7rem; text-transform: uppercase; }
-.live-velocity { font-size: 2rem; font-weight: 800; }
+#detected-movement { background: var(--accent); padding: 2px 8px; border-radius: 4px; font-weight: bold; font-size: 0.7rem; }
+.live-velocity { font-size: 2.2rem; font-weight: 800; text-shadow: 0 2px 4px rgba(0,0,0,0.8); }
 
-/* Dashboard Grid - Natural flow */
+/* Dashboard - Stays at bottom above controls */
 .dashboard-grid { 
     display: grid; 
     grid-template-columns: repeat(2, 1fr); 
-    gap: 10px; 
-    padding: 15px 0;
-    flex-shrink: 0;
+    gap: 8px; 
+    padding: 12px 0;
+    flex-shrink: 0; /* Prevents stats from being squashed */
 }
 
-.stat-card { background: var(--card-bg); border-radius: 8px; padding: 12px; border-bottom: 3px solid var(--accent); }
-.card-header { font-size: 0.65rem; color: #94a3b8; font-weight: bold; margin-bottom: 3px; }
-.main-val { font-size: 1.5rem; font-weight: bold; }
-.sub-val { font-size: 0.75rem; color: var(--accent); }
+.stat-card { background: var(--card-bg); border-radius: 8px; padding: 10px; border-bottom: 3px solid var(--accent); }
+.card-header { font-size: 0.6rem; color: #94a3b8; font-weight: bold; }
+.main-val { font-size: 1.4rem; font-weight: bold; }
+.sub-val { font-size: 0.7rem; color: var(--accent); }
 
-/* Controls Bar - Ensuring it stays at the bottom and is reachable */
+/* Controls - Locked to bottom */
 .controls-bar { 
     display: flex; 
-    gap: 8px; 
-    padding: 15px 0;
-    margin-top: auto; /* Pushes to bottom of container */
+    gap: 6px; 
+    padding-bottom: env(safe-area-inset-bottom); /* Fix for iPhone "notch" at bottom */
     flex-shrink: 0;
 }
 
-.btn { 
-    flex: 1; 
-    padding: 14px 8px; 
-    border: none; 
-    border-radius: 8px; 
-    font-weight: bold; 
-    cursor: pointer; 
-    font-size: 0.8rem; 
-}
-
+.btn { flex: 1; padding: 12px 5px; border: none; border-radius: 8px; font-weight: bold; cursor: pointer; font-size: 0.75rem; }
 .primary { background: var(--accent); color: white; }
 .secondary { background: #334155; color: white; }
 .danger { background: rgba(239, 68, 68, 0.15); color: var(--danger); border: 1px solid var(--danger); }
 
-/* Tablet & PC Adjustments */
+/* PC/iPad Adjustments */
 @media (min-width: 768px) {
     .dashboard-grid { grid-template-columns: repeat(4, 1fr); }
-    .vision-container { max-height: 60vh; }
-    .brand h1 { font-size: 1.8rem; }
-    .main-val { font-size: 2.2rem; }
+    .btn { font-size: 0.9rem; padding: 15px; }
 }
