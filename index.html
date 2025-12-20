@@ -72,7 +72,28 @@
         </main>
 
         <!-- Controls Bar -->
+        
         <footer class="controls-bar">
+            <!-- Height Input Field - Add to your HTML controls section -->
+<div class="input-group height-input-container">
+  <label for="height-input" class="height-label">
+    Your Height (inches):
+  </label>
+  <input 
+    type="number" 
+    id="height-input" 
+    class="height-input"
+    min="48" 
+    max="96" 
+    step="0.5" 
+    value="68" 
+    placeholder="Enter your height"
+  />
+  <small class="height-hint">
+    Default: 68" (5'8") | Example: 72" (6'0")
+  </small>
+</div>
+
             <button id="btn-camera" class="btn secondary">CAMERA</button>
             <label for="file-input" class="btn secondary">UPLOAD</label>
             <input type="file" id="file-input" accept="video/*" hidden>
