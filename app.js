@@ -9,7 +9,7 @@ class VBTStateMachine {
       RACK_HEIGHT_MIN: -0.1,
       RACK_HEIGHT_MAX: 0.15,
       RACK_HORIZONTAL_PROXIMITY: 0.18,
-      RACK_LOCK_FRAMES: 10,
+      RACK_LOCK_FRAMES: 30,  // SYNCED to match Clean hold time
       OVERHEAD_MIN_HEIGHT: 0.05,
       PULL_VELOCITY_TRIGGER: 0.4,
       LOCKOUT_VY_CUTOFF: 0.6,
@@ -93,7 +93,7 @@ class VBTStateMachine {
       return { vx: 0, vy: 0, speed: 0 };
     }
 
-    const dt = (timestamp - this.state.lastWristPos.t) / 1000;
+    const dt = (this.state.lastWristPos.t) / 1000;
     
     if (dt < this.THRESHOLDS.MIN_DT || dt > this.THRESHOLDS.MAX_DT) {
       this.state.lastWristPos = { x: wrist.x, y: wrist.y, t: timestamp };
@@ -260,7 +260,7 @@ class VBTStateMachine {
   classify(start, w, s, h, nose, hinged, crossed, heldAtShoulder) {
     const isOverhead = w.y < (nose.y - 0.05); 
     
-    // NEW CLEAN LOGIC: Based on swing logic with hold requirement
+    // CLEAN from hinge/standing
     if ((start === "HINGE" || start === "NONE") && crossed) {
       if (isOverhead) return { type: "SNATCH" };
       
@@ -269,9 +269,18 @@ class VBTStateMachine {
       
       // SWING: Reached shoulder area but didn't hold, stayed below hip
       if (w.y <= (s.y + this.THRESHOLDS.SWING_HEIGHT_BUFFER) && w.y < h.y) return { type: "SWING" };
-    } else if (start === "RACK" && isOverhead) {
+    }
+    
+    // RECLEAN: Started from rack, held at shoulder
+    if (start === "RACK" && heldAtShoulder) {
+      return { type: "CLEAN" };
+    }
+    
+    // PRESS: Started from rack, went overhead
+    if (start === "RACK" && isOverhead) {
       return { type: "PRESS" };
     }
+    
     return null;
   }
 
