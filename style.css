@@ -92,3 +92,54 @@ body {
     .dashboard-grid { grid-template-columns: repeat(4, 1fr); }
     .btn { font-size: 0.9rem; padding: 15px; }
 }
+/* Height Input Styles - Add to your stylesheet */
+
+.height-input-container {
+  margin-bottom: 20px;
+}
+
+.height-label {
+  display: block;
+  color: #fff;
+  font-weight: bold;
+  margin-bottom: 8px;
+  font-size: 14px;
+}
+
+.height-input {
+  width: 100%;
+  padding: 10px;
+  font-size: 16px;
+  border: 2px solid #3b82f6;
+  border-radius: 8px;
+  background: #1a1a1a;
+  color: #fff;
+  box-sizing: border-box;
+  transition: border-color 0.3s ease, box-shadow 0.3s ease;
+}
+
+.height-input:focus {
+  outline: none;
+  border-color: #10b981;
+  box-shadow: 0 0 0 3px rgba(16, 185, 129, 0.2);
+}
+
+.height-hint {
+  display: block;
+  color: #999;
+  margin-top: 5px;
+  font-size: 12px;
+}
+
+/* Remove spinner arrows (optional) */
+.height-input::-webkit-inner-spin-button,
+.height-input::-webkit-outer-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+
+/* Firefox - Remove spinner */
+.height-input[type=number] {
+  -moz-appearance: textfield;
+}
+
