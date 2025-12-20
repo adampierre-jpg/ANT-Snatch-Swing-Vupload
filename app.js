@@ -107,7 +107,7 @@ class VBTStateMachine {
     let vy = (dyPx / this.state.calibration) / dt;
 
     const TARGET_FPS = 15;
-    const frameTimeMs = 1000 / TARGET_FPS;
+    const frameTimeMs = 500 / TARGET_FPS;
     const actualFrameTimeMs = timestamp - this.state.lastWristPos.t;
     const timeRatio = frameTimeMs / actualFrameTimeMs;
     
