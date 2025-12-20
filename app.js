@@ -9,11 +9,11 @@ class VBTStateMachine {
       RACK_HEIGHT_MIN: -0.1,
       RACK_HEIGHT_MAX: 0.15,
       RACK_HORIZONTAL_PROXIMITY: 0.18,
-      RACK_LOCK_FRAMES: 15,
+      RACK_LOCK_FRAMES: 30,
       OVERHEAD_MIN_HEIGHT: 0.05,
       PULL_VELOCITY_TRIGGER: 0.4,
       LOCKOUT_VY_CUTOFF: 0.6,
-      CLEAN_HOLD_FRAMES: 15,  
+      CLEAN_HOLD_FRAMES: 30,  
       CLEAN_HOLD_VY: 0.3,     
       SWING_HEIGHT_BUFFER: 0.08,
       VELOCITY_ALPHA: 0.15,
@@ -106,8 +106,8 @@ class VBTStateMachine {
     let vx = (dxPx / this.state.calibration) / dt;
     let vy = (dyPx / this.state.calibration) / dt;
 
-    const TARGET_FPS = 15;
-    const frameTimeMs = 500 / TARGET_FPS;
+    const TARGET_FPS = 30;
+    const frameTimeMs = 1000 / TARGET_FPS;
     const actualFrameTimeMs = timestamp - this.state.lastWristPos.t;
     const timeRatio = frameTimeMs / actualFrameTimeMs;
     
@@ -359,8 +359,24 @@ async function masterLoop(ts) {
   if (results?.landmarks?.length > 0) {
     const raw = results.landmarks[0];
     const pose = {
-      LEFT: { WRIST: raw[15], SHOULDER: raw[11], HIP: raw[23], KNEE: raw[25], NOSE: raw[0], ELBOW: raw[13] },
-      RIGHT: { WRIST: raw[16], SHOULDER: raw[12], HIP: raw[24], KNEE: raw[26], NOSE: raw[0], ELBOW: raw[14] }
+      LEFT: { 
+        WRIST: raw[15], 
+        SHOULDER: raw[11], 
+        HIP: raw[23], 
+        KNEE: raw[25], 
+        ANKLE: raw[27],  // Added ankle
+        NOSE: raw[0], 
+        ELBOW: raw[13] 
+      },
+      RIGHT: { 
+        WRIST: raw[16], 
+        SHOULDER: raw[12], 
+        HIP: raw[24], 
+        KNEE: raw[26], 
+        ANKLE: raw[28],  // Added ankle
+        NOSE: raw[0], 
+        ELBOW: raw[14] 
+      }
     };
     if (app.isTestRunning && app.stateMachine) {
       const move = app.stateMachine.update(pose, ts, app.ctx, app.canvas);
@@ -372,18 +388,44 @@ async function masterLoop(ts) {
 }
 
 function drawDebugSkeleton(pose) {
-  const ctx = app.ctx; const canvas = app.canvas;
+  const ctx = app.ctx; 
+  const canvas = app.canvas;
+  
+  // Draw skeleton lines for both sides
   for (const side of ['LEFT', 'RIGHT']) {
     const color = side === 'LEFT' ? '#00ff00' : '#ff0000';
-    const wrist = pose[side].WRIST; const elbow = pose[side].ELBOW; const shoulder = pose[side].SHOULDER; const hip = pose[side].HIP; const knee = pose[side].KNEE;
-    ctx.strokeStyle = color; ctx.lineWidth = 3; ctx.beginPath();
+    const wrist = pose[side].WRIST; 
+    const elbow = pose[side].ELBOW; 
+    const shoulder = pose[side].SHOULDER; 
+    const hip = pose[side].HIP; 
+    const knee = pose[side].KNEE;
+    const ankle = pose[side].ANKLE;  // Now drawing to ankle
+    
+    ctx.strokeStyle = color; 
+    ctx.lineWidth = 3; 
+    ctx.beginPath();
     ctx.moveTo(wrist.x * canvas.width, wrist.y * canvas.height);
     ctx.lineTo(elbow.x * canvas.width, elbow.y * canvas.height);
     ctx.lineTo(shoulder.x * canvas.width, shoulder.y * canvas.height);
     ctx.lineTo(hip.x * canvas.width, hip.y * canvas.height);
     ctx.lineTo(knee.x * canvas.width, knee.y * canvas.height);
+    ctx.lineTo(ankle.x * canvas.width, ankle.y * canvas.height);  // Extended to ankle
     ctx.stroke();
   }
+  
+  // Draw 🙂 emoji at nose position
+  const nose = pose.LEFT.NOSE;
+  const leftShoulder = pose.LEFT.SHOULDER;
+  const rightShoulder = pose.RIGHT.SHOULDER;
+  
+  // Calculate head size based on shoulder width (natural proportions)
+  const shoulderWidth = Math.abs(leftShoulder.x - rightShoulder.x) * canvas.width;
+  const headSize = shoulderWidth * 0.35;  // Head is roughly 35% of shoulder width
+  
+  ctx.font = `${headSize}px Arial`;
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText('🙂', nose.x * canvas.width, nose.y * canvas.height);
 }
 
 function record(m) {
