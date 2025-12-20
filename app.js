@@ -93,7 +93,8 @@ class VBTStateMachine {
       return { vx: 0, vy: 0, speed: 0 };
     }
 
-    const dt = (this.state.lastWristPos.t) / 1000;
+    const dt = (timestamp - this.state.lastWristPos.t) / 1000;
+
     
     if (dt < this.THRESHOLDS.MIN_DT || dt > this.THRESHOLDS.MAX_DT) {
       this.state.lastWristPos = { x: wrist.x, y: wrist.y, t: timestamp };
