@@ -420,7 +420,7 @@ function drawDebugSkeleton(pose) {
   
   // Calculate head size based on shoulder width (natural proportions)
   const shoulderWidth = Math.abs(leftShoulder.x - rightShoulder.x) * canvas.width;
-  const headSize = shoulderWidth * .75;  // Head is roughly 35% of shoulder width
+  const headSize = shoulderWidth * 1.25;  // Head is roughly 35% of shoulder width
   
   ctx.font = `${headSize}px Arial`;
   ctx.textAlign = 'center';
