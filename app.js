@@ -227,19 +227,16 @@ class VBTStateMachine {
       const isAtShoulder = wrist.y <= (shoulder.y + 0.12) && wrist.y >= (shoulder.y - 0.08);
       const nearlyStopped = Math.abs(this.state.smoothedVy) < this.THRESHOLDS.LOCKOUT_VY_CUTOFF;
       
-      // DECISION LOGIC
       if (nearlyStopped && isAtShoulder && !hinged) {
         this.state.shoulderHoldFrames++;
         if (this.state.shoulderHoldFrames >= this.THRESHOLDS.CLEAN_HOLD_FRAMES) {
             result = this.classify(this.state.movementStartPose, wrist, shoulder, hip, nose, hinged, this.state.hipCrossedUpward, true);
             this.state.phase = "LOCKED";
         }
-      } else if (nearlyStopped && !isAtShoulder) {
-        // Quick lockout for Snatches or non-shoulder movements
+      } else if (nearlyStopped) {
         result = this.classify(this.state.movementStartPose, wrist, shoulder, hip, nose, hinged, this.state.hipCrossedUpward, false);
         this.state.phase = "LOCKED";
       } else if (this.state.smoothedVy > this.THRESHOLDS.PULL_VELOCITY_TRIGGER && isAtShoulder) {
-        // Bell started falling while at shoulder height without holding for 1s
         result = this.classify(this.state.movementStartPose, wrist, shoulder, hip, nose, hinged, this.state.hipCrossedUpward, false);
         this.state.phase = "LOCKED";
       }
@@ -255,7 +252,7 @@ class VBTStateMachine {
   }
 
   classify(start, w, s, h, nose, hinged, crossed, heldAtShoulder) {
-    const isOverhead = w.y < (nose.y - 0.05); // Fixed offset per instruction
+    const isOverhead = w.y < (nose.y - 0.05); 
     const isAtShoulder = w.y <= (s.y + 0.12) && w.y >= (s.y - 0.08);
     
     if ((start === "HINGE" || start === "NONE") && crossed) {
@@ -272,7 +269,6 @@ class VBTStateMachine {
     const centerX = (pose.LEFT.SHOULDER.x + pose.RIGHT.SHOULDER.x) / 2 * canvas.width;
     const centerY = (pose.LEFT.SHOULDER.y + pose.LEFT.HIP.y) / 2 * canvas.height;
     const pct = this.state.resetProgress / this.THRESHOLDS.RESET_DURATION_FRAMES;
-    
     ctx.beginPath(); ctx.arc(centerX, centerY, 40, 0, Math.PI * 2);
     ctx.strokeStyle = "rgba(255,255,255,0.2)"; ctx.lineWidth = 8; ctx.stroke();
     ctx.beginPath(); ctx.arc(centerX, centerY, 40, -Math.PI/2, (-Math.PI/2) + (Math.PI * 2 * pct));
@@ -290,12 +286,10 @@ async function initializeApp() {
   app.video = document.getElementById("video");
   app.canvas = document.getElementById("canvas");
   app.ctx = app.canvas.getContext("2d");
-
   document.getElementById("btn-camera").onclick = startCamera;
   document.getElementById("file-input").onchange = handleUpload;
   document.getElementById("btn-start-test").onclick = toggleTest;
   document.getElementById("btn-reset").onclick = resetSession;
-
   const vision = await FilesetResolver.forVisionTasks("https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/wasm");
   app.landmarker = await PoseLandmarker.createFromOptions(vision, {
     baseOptions: { modelAssetPath: "https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_full/float16/1/pose_landmarker_full.task", delegate: "GPU" },
@@ -368,9 +362,21 @@ function drawDebugSkeleton(pose) {
 }
 
 function record(m) {
-  app.totalReps++; app.lastMove = m.type; app.history[m.type].push(m.velocity);
-  document.getElementById(`val-${m.type.toLowerCase()}s`).innerText = app.history[m.type].length;
-  document.getElementById(`val-${m.type.toLowerCase()}-velocity`).innerText = m.velocity.toFixed(2);
+  app.totalReps++; 
+  app.lastMove = m.type; 
+  app.history[m.type].push(m.velocity);
+  
+  // Pluralization fix for Presses and Snatches
+  let plural = m.type.toLowerCase() + "s";
+  if (m.type === "PRESS") plural = "presses";
+  if (m.type === "SNATCH") plural = "snatches";
+  
+  const countEl = document.getElementById(`val-${plural}`);
+  const velEl = document.getElementById(`val-${m.type.toLowerCase()}-velocity`);
+  
+  if (countEl) countEl.innerText = app.history[m.type].length;
+  if (velEl) velEl.innerText = m.velocity.toFixed(2);
+  
   document.getElementById("val-total-reps").innerText = app.totalReps;
   document.getElementById("detected-movement").innerText = m.type;
 }
@@ -379,8 +385,14 @@ function resetSession() {
   app.totalReps = 0; app.lastMove = "READY";
   app.history = { CLEAN: [], PRESS: [], SNATCH: [], SWING: [] };
   if (app.stateMachine) app.stateMachine.reset();
-  ['val-cleans', 'val-presses', 'val-snatches', 'val-swings', 'val-total-reps'].forEach(id => document.getElementById(id).textContent = '0');
-  ['val-clean-velocity', 'val-press-velocity', 'val-snatch-velocity', 'val-swing-velocity', 'val-velocity'].forEach(id => document.getElementById(id).textContent = '0.00');
+  ['val-cleans', 'val-presses', 'val-snatches', 'val-swings', 'val-total-reps'].forEach(id => {
+      const el = document.getElementById(id);
+      if (el) el.textContent = '0';
+  });
+  ['val-clean-velocity', 'val-press-velocity', 'val-snatch-velocity', 'val-swing-velocity', 'val-velocity'].forEach(id => {
+      const el = document.getElementById(id);
+      if (el) el.textContent = '0.00';
+  });
   document.getElementById("detected-movement").innerText = "READY";
 }
 
