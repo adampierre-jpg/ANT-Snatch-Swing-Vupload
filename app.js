@@ -9,11 +9,11 @@ class VBTStateMachine {
       RACK_HEIGHT_MIN: -0.1,
       RACK_HEIGHT_MAX: 0.15,
       RACK_HORIZONTAL_PROXIMITY: 0.18,
-      RACK_LOCK_FRAMES: 30,
+      RACK_LOCK_FRAMES: 15,
       OVERHEAD_MIN_HEIGHT: 0.05,
       PULL_VELOCITY_TRIGGER: 0.4,
       LOCKOUT_VY_CUTOFF: 0.6,
-      CLEAN_HOLD_FRAMES: 30,  
+      CLEAN_HOLD_FRAMES: 15,  
       CLEAN_HOLD_VY: 0.3,     
       SWING_HEIGHT_BUFFER: 0.08,
       VELOCITY_ALPHA: 0.15,
@@ -106,8 +106,8 @@ class VBTStateMachine {
     let vx = (dxPx / this.state.calibration) / dt;
     let vy = (dyPx / this.state.calibration) / dt;
 
-    const TARGET_FPS = 30;
-    const frameTimeMs = 1000 / TARGET_FPS;
+    const TARGET_FPS = 15;
+    const frameTimeMs = 500 / TARGET_FPS;
     const actualFrameTimeMs = timestamp - this.state.lastWristPos.t;
     const timeRatio = frameTimeMs / actualFrameTimeMs;
     
@@ -420,7 +420,7 @@ function drawDebugSkeleton(pose) {
   
   // Calculate head size based on shoulder width (natural proportions)
   const shoulderWidth = Math.abs(leftShoulder.x - rightShoulder.x) * canvas.width;
-  const headSize = shoulderWidth * 0.35;  // Head is roughly 35% of shoulder width
+  const headSize = shoulderWidth * .75;  // Head is roughly 35% of shoulder width
   
   ctx.font = `${headSize}px Arial`;
   ctx.textAlign = 'center';
