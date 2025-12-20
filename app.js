@@ -60,7 +60,10 @@ class VBTStateMachine {
       currentRepPeak: 0,
       hipCrossedUpward: false,
       wristStartedBelowHip: false,
+      shoulderHoldFrames: 0,
+      leftRackPosition: false,
       smoothedVy: 0,
+
       lastTimestamp: 0,
       lastWristY: null,
       lastWristPos: null,
@@ -284,11 +287,24 @@ class VBTStateMachine {
         this.state.currentRepPeak = 0;
         this.state.hipCrossedUpward = false;
         this.state.wristStartedBelowHip = wrist.y > hip.y;
+        this.state.shoulderHoldFrames = 0;
+        this.state.leftRackPosition = false;
+  }
+}
+
       }
     } else if (this.state.phase === "PULLING") {
       this.state.currentRepPeak = Math.max(this.state.currentRepPeak, Math.abs(this.state.smoothedVy));
 
       if (wrist.y < hip.y) this.state.hipCrossedUpward = true;
+  if (wrist.y < hip.y) this.state.hipCrossedUpward = true;
+  
+  // Track if bell left rack position (went down)
+  if (this.state.movementStartPose === "RACK" && wrist.y > (shoulder.y + 0.12)) {
+    this.state.leftRackPosition = true;
+  }
+
+  const isAtShoulder = wrist.y <= (shoulder.y + 0.12) && wrist.y >= (shoulder.y - 0.08);
 
       const nearlyStopped = Math.abs(this.state.smoothedVy) < this.THRESHOLDS.LOCKOUT_VY_CUTOFF;
 
@@ -328,7 +344,7 @@ class VBTStateMachine {
     }
 
     // From RACK position
-    if (start === "RACK") {
+    if (start === "RACK" && heldAtShoulder && this.state.leftRackPosition) {
       if (isOverhead) return { type: "PRESS" };
       // Re-clean from rack
       if (isAtShoulder && !hinged) return { type: "CLEAN" };
