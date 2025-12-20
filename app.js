@@ -9,7 +9,7 @@ class VBTStateMachine {
       RACK_HEIGHT_MIN: -0.1,
       RACK_HEIGHT_MAX: 0.15,
       RACK_HORIZONTAL_PROXIMITY: 0.18,
-      RACK_LOCK_FRAMES: 30,
+      RACK_LOCK_FRAMES: 10,  // REDUCED from 30 to 10 frames
       OVERHEAD_MIN_HEIGHT: 0.05,
       PULL_VELOCITY_TRIGGER: 0.4,
       LOCKOUT_VY_CUTOFF: 0.6,
@@ -366,7 +366,6 @@ function record(m) {
   app.lastMove = m.type; 
   app.history[m.type].push(m.velocity);
   
-  // Pluralization fix for Presses and Snatches
   let plural = m.type.toLowerCase() + "s";
   if (m.type === "PRESS") plural = "presses";
   if (m.type === "SNATCH") plural = "snatches";
