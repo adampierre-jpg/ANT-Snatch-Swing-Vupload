@@ -9,7 +9,7 @@ class VBTStateMachine {
       RACK_HEIGHT_MIN: -0.1,
       RACK_HEIGHT_MAX: 0.15,
       RACK_HORIZONTAL_PROXIMITY: 0.18,
-      RACK_LOCK_FRAMES: 10,  // REDUCED from 30 to 10 frames
+      RACK_LOCK_FRAMES: 10,
       OVERHEAD_MIN_HEIGHT: 0.05,
       PULL_VELOCITY_TRIGGER: 0.4,
       LOCKOUT_VY_CUTOFF: 0.6,
@@ -198,15 +198,18 @@ class VBTStateMachine {
     const atRack = Math.abs(wrist.y - shoulder.y) < 0.15 && 
                    Math.abs(wrist.x - (smoothedPose.LEFT.SHOULDER.x + smoothedPose.RIGHT.SHOULDER.x)/2) < 0.2;
 
-    if (atRack && !hinged) {
-      if (++this.state.rackFrameCount >= this.THRESHOLDS.RACK_LOCK_FRAMES) 
-        this.state.currentPose = "RACK";
-    } else {
-      this.state.rackFrameCount = 0;
-      if (wrist.y > (smoothedPose[side].KNEE.y + this.THRESHOLDS.KNEE_CROSS)) 
-        this.state.currentPose = "HINGE";
-      else if (this.state.phase === "IDLE") 
-        this.state.currentPose = "NONE";
+    // RACK DETECTION - Only runs when NOT actively pulling
+    if (this.state.phase === "IDLE" || this.state.phase === "LOCKED") {
+      if (atRack && !hinged) {
+        if (++this.state.rackFrameCount >= this.THRESHOLDS.RACK_LOCK_FRAMES) 
+          this.state.currentPose = "RACK";
+      } else {
+        this.state.rackFrameCount = 0;
+        if (wrist.y > (smoothedPose[side].KNEE.y + this.THRESHOLDS.KNEE_CROSS)) 
+          this.state.currentPose = "HINGE";
+        else if (this.state.phase === "IDLE") 
+          this.state.currentPose = "NONE";
+      }
     }
 
     let result = null;
@@ -227,6 +230,7 @@ class VBTStateMachine {
       const isAtShoulder = wrist.y <= (shoulder.y + 0.12) && wrist.y >= (shoulder.y - 0.08);
       const nearlyStopped = Math.abs(this.state.smoothedVy) < this.THRESHOLDS.LOCKOUT_VY_CUTOFF;
       
+      // CLEAN DETECTION: Hold at shoulder for 30 frames
       if (nearlyStopped && isAtShoulder && !hinged) {
         this.state.shoulderHoldFrames++;
         if (this.state.shoulderHoldFrames >= this.THRESHOLDS.CLEAN_HOLD_FRAMES) {
@@ -234,9 +238,11 @@ class VBTStateMachine {
             this.state.phase = "LOCKED";
         }
       } else if (nearlyStopped) {
+        // Quick lockout for other movements
         result = this.classify(this.state.movementStartPose, wrist, shoulder, hip, nose, hinged, this.state.hipCrossedUpward, false);
         this.state.phase = "LOCKED";
-      } else if (this.state.smoothedVy > this.THRESHOLDS.PULL_VELOCITY_TRIGGER && isAtShoulder) {
+      } else if (this.state.smoothedVy > this.THRESHOLDS.PULL_VELOCITY_TRIGGER && this.state.shoulderHoldFrames > 0) {
+        // Bell started falling while at shoulder without completing hold
         result = this.classify(this.state.movementStartPose, wrist, shoulder, hip, nose, hinged, this.state.hipCrossedUpward, false);
         this.state.phase = "LOCKED";
       }
@@ -253,11 +259,15 @@ class VBTStateMachine {
 
   classify(start, w, s, h, nose, hinged, crossed, heldAtShoulder) {
     const isOverhead = w.y < (nose.y - 0.05); 
-    const isAtShoulder = w.y <= (s.y + 0.12) && w.y >= (s.y - 0.08);
     
+    // NEW CLEAN LOGIC: Based on swing logic with hold requirement
     if ((start === "HINGE" || start === "NONE") && crossed) {
       if (isOverhead) return { type: "SNATCH" };
-      if (heldAtShoulder && isAtShoulder && !hinged) return { type: "CLEAN" };
+      
+      // CLEAN: Held at shoulder for 30 frames, within 8% of shoulder height
+      if (heldAtShoulder && w.y <= (s.y + 0.08)) return { type: "CLEAN" };
+      
+      // SWING: Reached shoulder area but didn't hold, stayed below hip
       if (w.y <= (s.y + this.THRESHOLDS.SWING_HEIGHT_BUFFER) && w.y < h.y) return { type: "SWING" };
     } else if (start === "RACK" && isOverhead) {
       return { type: "PRESS" };
