@@ -9,7 +9,7 @@ class VBTStateMachine {
       RACK_HEIGHT_MIN: -0.1,
       RACK_HEIGHT_MAX: 0.15,
       RACK_HORIZONTAL_PROXIMITY: 0.18,
-      RACK_LOCK_FRAMES: 30,  // SYNCED to match Clean hold time
+      RACK_LOCK_FRAMES: 30,
       OVERHEAD_MIN_HEIGHT: 0.05,
       PULL_VELOCITY_TRIGGER: 0.4,
       LOCKOUT_VY_CUTOFF: 0.6,
@@ -94,7 +94,6 @@ class VBTStateMachine {
     }
 
     const dt = (timestamp - this.state.lastWristPos.t) / 1000;
-
     
     if (dt < this.THRESHOLDS.MIN_DT || dt > this.THRESHOLDS.MAX_DT) {
       this.state.lastWristPos = { x: wrist.x, y: wrist.y, t: timestamp };
@@ -237,6 +236,12 @@ class VBTStateMachine {
         if (this.state.shoulderHoldFrames >= this.THRESHOLDS.CLEAN_HOLD_FRAMES) {
             result = this.classify(this.state.movementStartPose, wrist, shoulder, hip, nose, hinged, this.state.hipCrossedUpward, true);
             this.state.phase = "LOCKED";
+            
+            // AUTO-SET RACK: If clean finished, bell is already at rack
+            if (result && result.type === "CLEAN" && atRack) {
+              this.state.currentPose = "RACK";
+              this.state.rackFrameCount = this.THRESHOLDS.RACK_LOCK_FRAMES;
+            }
         }
       } else if (nearlyStopped) {
         // Quick lockout for other movements
