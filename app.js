@@ -1,4 +1,4 @@
-/* VBT v4.0 - WORKING VERSION + Calibration System */
+/* VBT v4.1 - Organized & Complete */
 import { PoseLandmarker, FilesetResolver } from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/vision_bundle.mjs";
 
 class VBTStateMachine {
@@ -7,28 +7,36 @@ class VBTStateMachine {
 
     this.THRESHOLDS = {
       HINGE: 0.08,
-      KNEECROSS: 0.05,
-      RACKHEIGHTMIN: -0.1,
-      RACKHEIGHTMAX: 0.15,
-      RACKHORIZONTALPROXIMITY: 0.18,
-      RACKLOCKFRAMES: 30,
-      OVERHEADMINHEIGHT: 0.05,
-      PULLVELOCITYTRIGGER: 0.4,
-      LOCKOUTVYCUTOFF: 0.6,
-      VELOCITYALPHA: 0.15,
-      TORSOMETERS: 0.45,
-      RESETDURATIONFRAMES: 30,
-      NOSETOHEADCM: 11 // NEW: For calibration
+      KNEE_CROSS: 0.05,
+      RACK_HEIGHT_MIN: -0.1,
+      RACK_HEIGHT_MAX: 0.15,
+      RACK_HORIZONTAL_PROXIMITY: 0.18,
+      RACK_LOCK_FRAMES: 15,
+      OVERHEAD_MIN_HEIGHT: 0.05,
+      PULL_VELOCITY_TRIGGER: 0.4,
+      LOCKOUT_VY_CUTOFF: 0.6,
+      CLEAN_HOLD_FRAMES: 15,  
+      CLEAN_HOLD_VY: 0.3,     
+      SWING_HEIGHT_BUFFER: 0.08,
+      VELOCITY_ALPHA: 0.15,
+      POSITION_ALPHA: 0.3,
+      TORSO_METERS: 0.45,
+      RESET_DURATION_FRAMES: 30,
+      MAX_REALISTIC_VELOCITY: 8.0,
+      ZERO_BAND: 0.1,
+      MIN_DT: 0.016,
+      MAX_DT: 0.1,
+      NOSETOHEADCM: 11
     };
 
-    // ENHANCED: Calibration data (ADDED BODY MEASUREMENTS)
+    // Calibration data - single unified version
     this.calibrationData = {
       isCalibrated: false,
       framesCaptured: 0,
       neutralWristOffset: 0,
       maxTorsoLength: 0,
 
-      // NEW: Pixel measurements
+      // Pixel measurements
       ankleToNosePixels: 0,
       shoulderToHipPixels: 0,
       hipToKneePixels: 0,
@@ -36,7 +44,7 @@ class VBTStateMachine {
       shoulderToElbowPixels: 0,
       elbowToWristPixels: 0,
 
-      // NEW: Real measurements in cm
+      // Real measurements in cm
       pixelToCmRatio: 0,
       torsoLengthCm: 0,
       thighLengthCm: 0,
@@ -59,35 +67,112 @@ class VBTStateMachine {
       movementStartPose: null,
       currentRepPeak: 0,
       hipCrossedUpward: false,
+      wristStartedBelowHip: false,
+      shoulderHoldFrames: 0,
       smoothedVy: 0,
       lastTimestamp: 0,
       lastWristY: null,
+      lastWristPos: null,
       calibration: null,
-      resetProgress: 0
+      resetProgress: 0,
+      smoothedLandmarks: {
+        LEFT: { WRIST: null, SHOULDER: null, HIP: null, KNEE: null, NOSE: null },
+        RIGHT: { WRIST: null, SHOULDER: null, HIP: null, KNEE: null, NOSE: null }
+      }
     };
   }
 
-  // NEW: Set user height method
   setUserHeight(inches) {
     this.calibrationData.userHeightInches = inches;
     this.calibrationData.fullHeightCm = inches * 2.54;
     console.log(`User height set: ${inches}" = ${this.calibrationData.fullHeightCm.toFixed(1)} cm`);
   }
 
+  smoothLandmarks(rawPose) {
+    const alpha = this.THRESHOLDS.POSITION_ALPHA;
+    const smoothed = { LEFT: {}, RIGHT: {} };
+
+    for (const side of ['LEFT', 'RIGHT']) {
+      for (const landmark of ['WRIST', 'SHOULDER', 'HIP', 'KNEE', 'NOSE']) {
+        if (!rawPose[side] || !rawPose[side][landmark]) continue;
+
+        const raw = rawPose[side][landmark];
+        const prev = this.state.smoothedLandmarks[side][landmark];
+
+        if (!prev) {
+          smoothed[side][landmark] = { x: raw.x, y: raw.y, z: raw.z || 0 };
+        } else {
+          smoothed[side][landmark] = {
+            x: alpha * raw.x + (1 - alpha) * prev.x,
+            y: alpha * raw.y + (1 - alpha) * prev.y,
+            z: alpha * (raw.z || 0) + (1 - alpha) * (prev.z || 0)
+          };
+        }
+      }
+    }
+
+    this.state.smoothedLandmarks = smoothed;
+    return smoothed;
+  }
+
+  calculateVelocity(wrist, timestamp) {
+    if (!this.state.lastWristPos || !this.state.calibration) {
+      this.state.lastWristPos = { x: wrist.x, y: wrist.y, t: timestamp };
+      return { vx: 0, vy: 0, speed: 0 };
+    }
+
+    const dt = (timestamp - this.state.lastWristPos.t) / 1000;
+
+    if (dt < this.THRESHOLDS.MIN_DT || dt > this.THRESHOLDS.MAX_DT) {
+      this.state.lastWristPos = { x: wrist.x, y: wrist.y, t: timestamp };
+      return { vx: 0, vy: 0, speed: 0 };
+    }
+
+    const dxPx = (wrist.x - this.state.lastWristPos.x) * this.canvasHeight;
+    const dyPx = (wrist.y - this.state.lastWristPos.y) * this.canvasHeight;
+
+    let vx = (dxPx / this.state.calibration) / dt;
+    let vy = (dyPx / this.state.calibration) / dt;
+
+    const TARGET_FPS = 15;
+    const frameTimeMs = 500 / TARGET_FPS;
+    const actualFrameTimeMs = timestamp - this.state.lastWristPos.t;
+    const timeRatio = frameTimeMs / actualFrameTimeMs;
+
+    vx *= timeRatio;
+    vy *= timeRatio;
+
+    let speed = Math.hypot(vx, vy);
+
+    if (speed < this.THRESHOLDS.ZERO_BAND) {
+      speed = 0;
+      vx = 0;
+      vy = 0;
+    }
+
+    speed = Math.min(speed, this.THRESHOLDS.MAX_REALISTIC_VELOCITY);
+    vy = Math.min(Math.max(vy, -this.THRESHOLDS.MAX_REALISTIC_VELOCITY), this.THRESHOLDS.MAX_REALISTIC_VELOCITY);
+
+    this.state.lastWristPos = { x: wrist.x, y: wrist.y, t: timestamp };
+
+    return { vx, vy, speed };
+  }
+
   update(pose, timestamp, ctx, canvas) {
     if (!pose.LEFT || !pose.RIGHT) return null;
 
-    const currentTorso = Math.abs(pose.LEFT.SHOULDER.y - pose.LEFT.HIP.y);
-    const leftWristOffset = pose.LEFT.WRIST.y - pose.LEFT.HIP.y;
-    const rightWristOffset = pose.RIGHT.WRIST.y - pose.RIGHT.HIP.y;
+    const smoothedPose = this.smoothLandmarks(pose);
+    const currentTorso = Math.abs(smoothedPose.LEFT.SHOULDER.y - smoothedPose.LEFT.HIP.y);
+    const leftWristOffset = smoothedPose.LEFT.WRIST.y - smoothedPose.LEFT.HIP.y;
+    const rightWristOffset = smoothedPose.RIGHT.WRIST.y - smoothedPose.RIGHT.HIP.y;
 
-    // --- 1. CALIBRATION PHASE (ENHANCED) ---
+    // === CALIBRATION PHASE (first 30 frames) ===
     if (!this.calibrationData.isCalibrated) {
       this.calibrationData.framesCaptured++;
       this.calibrationData.neutralWristOffset += (leftWristOffset + rightWristOffset) / 2;
       this.calibrationData.maxTorsoLength = Math.max(this.calibrationData.maxTorsoLength, currentTorso);
 
-      // NEW: Accumulate body measurements
+      // Accumulate body measurements
       const ankle = (pose.LEFT.ANKLE.y + pose.RIGHT.ANKLE.y) / 2;
       const nose = (pose.LEFT.NOSE.y + pose.RIGHT.NOSE.y) / 2;
       const shoulder = (pose.LEFT.SHOULDER.y + pose.RIGHT.SHOULDER.y) / 2;
@@ -104,7 +189,7 @@ class VBTStateMachine {
       this.calibrationData.elbowToWristPixels += Math.abs(elbow - wrist);
 
       if (this.calibrationData.framesCaptured >= 30) {
-        // Average measurements
+        // Average all measurements
         this.calibrationData.neutralWristOffset /= 30;
         this.calibrationData.ankleToNosePixels /= 30;
         this.calibrationData.shoulderToHipPixels /= 30;
@@ -113,7 +198,7 @@ class VBTStateMachine {
         this.calibrationData.shoulderToElbowPixels /= 30;
         this.calibrationData.elbowToWristPixels /= 30;
 
-        // Calculate pixel-to-cm conversion
+        // Calculate pixel-to-cm ratio
         const ankleToNoseCm = this.calibrationData.fullHeightCm - this.THRESHOLDS.NOSETOHEADCM;
         this.calibrationData.pixelToCmRatio = ankleToNoseCm / this.calibrationData.ankleToNosePixels;
 
@@ -133,15 +218,16 @@ class VBTStateMachine {
       return null;
     }
 
-    // --- 2. FLEXIBLE UNLOCK (UNCHANGED) ---
+    // === FLEXIBLE UNLOCK (Hand Reset) ===
     const leftAtHome = Math.abs(leftWristOffset - this.calibrationData.neutralWristOffset) < 0.10;
     const rightAtHome = Math.abs(rightWristOffset - this.calibrationData.neutralWristOffset) < 0.10;
     const isTall = currentTorso > (this.calibrationData.maxTorsoLength * 0.85);
 
     if (leftAtHome && rightAtHome && isTall) {
       this.state.resetProgress++;
-      this.drawResetUI(ctx, canvas, pose);
-      if (this.state.resetProgress >= this.THRESHOLDS.RESETDURATIONFRAMES) {
+      this.drawResetUI(ctx, canvas, smoothedPose);
+
+      if (this.state.resetProgress > this.THRESHOLDS.RESET_DURATION_FRAMES) {
         console.log("✅ Flexible Unlock Triggered");
         this.reset();
         return null;
@@ -150,95 +236,105 @@ class VBTStateMachine {
       this.state.resetProgress = 0;
     }
 
-    // --- 3. SIDE LOCKING (UNCHANGED) ---
+    // === SIDE LOCKING ===
     if (this.state.lockedSide === "unknown") {
-      if (Math.abs(pose.LEFT.WRIST.y - pose.RIGHT.WRIST.y) > 0.1) {
-        this.state.lockedSide = pose.LEFT.WRIST.y < pose.RIGHT.WRIST.y ? "LEFT" : "RIGHT";
+      if (Math.abs(smoothedPose.LEFT.WRIST.y - smoothedPose.RIGHT.WRIST.y) > 0.1) {
+        this.state.lockedSide = smoothedPose.LEFT.WRIST.y > smoothedPose.RIGHT.WRIST.y ? "LEFT" : "RIGHT";
       } else {
         return null;
       }
     }
 
     const side = this.state.lockedSide;
-    const wrist = pose[side].WRIST;
-    const hip = pose[side].HIP;
-    const shoulder = pose[side].SHOULDER;
-    const nose = pose[side].NOSE;
+    const wrist = smoothedPose[side].WRIST;
+    const hip = smoothedPose[side].HIP;
+    const shoulder = smoothedPose[side].SHOULDER;
+    const nose = smoothedPose[side].NOSE;
 
-    // --- 4. VELOCITY CALCULATION (ENHANCED) ---
+    // === SET CALIBRATION FOR VELOCITY ===
     if (!this.state.calibration && shoulder && hip) {
-      // NEW: Use real torso length if available, otherwise use old method
       if (this.calibrationData.torsoLengthCm > 0) {
-        this.state.calibration = this.calibrationData.torsoLengthCm / 100; // Convert to meters
+        this.state.calibration = this.calibrationData.torsoLengthCm / 100;
       } else {
-        this.state.calibration = Math.abs(shoulder.y - hip.y) * this.canvasHeight * this.THRESHOLDS.TORSOMETERS;
+        this.state.calibration = (Math.abs(shoulder.y - hip.y) * this.canvasHeight) / this.THRESHOLDS.TORSO_METERS;
       }
     }
 
-    if (this.state.lastTimestamp > 0 && this.state.calibration) {
-      const dy = ((wrist.y - this.state.lastWristY) * this.canvasHeight);
-      const dt = (timestamp - this.state.lastTimestamp) / 1000;
+    // === VELOCITY CALCULATION ===
+    const velocity = this.calculateVelocity(wrist, timestamp);
 
-      if (dt > 0 && dt < 0.1) {
-        let vy;
-        // NEW: Use pixel-to-cm ratio if calibrated
-        if (this.calibrationData.pixelToCmRatio > 0) {
-          const dyMeters = (dy * this.calibrationData.pixelToCmRatio) / 100;
-          vy = dyMeters / dt;
-        } else {
-          // OLD METHOD: Fallback
-          vy = dy / this.state.calibration / dt;
-        }
-        this.state.smoothedVy = this.THRESHOLDS.VELOCITYALPHA * vy + (1 - this.THRESHOLDS.VELOCITYALPHA) * this.state.smoothedVy;
-      }
-    }
+    this.state.smoothedVy = (this.THRESHOLDS.VELOCITY_ALPHA * velocity.vy) + 
+                            ((1 - this.THRESHOLDS.VELOCITY_ALPHA) * this.state.smoothedVy);
 
     this.state.lastTimestamp = timestamp;
     this.state.lastWristY = wrist.y;
 
-    // --- 5. POSE DETECTION (UNCHANGED) ---
+    // === POSE DETECTION ===
     const hinged = Math.abs(shoulder.y - hip.y) < this.THRESHOLDS.HINGE;
     const atRack = Math.abs(wrist.y - shoulder.y) < 0.15 && 
-                   Math.abs(wrist.x - (pose.LEFT.SHOULDER.x + pose.RIGHT.SHOULDER.x)/2) < 0.2;
+                   Math.abs(wrist.x - (smoothedPose.LEFT.SHOULDER.x + smoothedPose.RIGHT.SHOULDER.x)/2) < 0.2;
 
-    if (atRack && !hinged) {
-      if (++this.state.rackFrameCount >= this.THRESHOLDS.RACKLOCKFRAMES) {
-        this.state.currentPose = "RACK";
+    // RACK DETECTION - Only when not actively pulling
+    if (this.state.phase === "IDLE" || this.state.phase === "LOCKED") {
+      if (atRack && !hinged) {
+        if (++this.state.rackFrameCount >= this.THRESHOLDS.RACK_LOCK_FRAMES) {
+          this.state.currentPose = "RACK";
+        }
+      } else {
+        this.state.rackFrameCount = 0;
+        if (wrist.y > (smoothedPose[side].KNEE.y + this.THRESHOLDS.KNEE_CROSS)) {
+          this.state.currentPose = "HINGE";
+        } else if (this.state.phase === "IDLE") {
+          this.state.currentPose = "NONE";
+        }
       }
-    } else {
-      this.state.rackFrameCount = 0;
     }
 
-    if (wrist.y > pose[side].KNEE.y + this.THRESHOLDS.KNEECROSS) {
-      this.state.currentPose = "HINGE";
-    } else if (this.state.phase === "IDLE") {
-      this.state.currentPose = "NONE";
-    }
-
-    // --- 6. MOVEMENT LOGIC (UNCHANGED) ---
+    // === MOVEMENT DETECTION LOGIC ===
     let result = null;
 
     if (this.state.phase === "IDLE") {
-      if (Math.abs(this.state.smoothedVy) > this.THRESHOLDS.PULLVELOCITYTRIGGER) {
+      if (this.state.smoothedVy < -this.THRESHOLDS.PULL_VELOCITY_TRIGGER) {
         this.state.phase = "PULLING";
         this.state.movementStartPose = this.state.currentPose;
         this.state.currentRepPeak = 0;
         this.state.hipCrossedUpward = false;
+        this.state.wristStartedBelowHip = wrist.y > hip.y;
+        this.state.shoulderHoldFrames = 0;
       }
     } else if (this.state.phase === "PULLING") {
       this.state.currentRepPeak = Math.max(this.state.currentRepPeak, Math.abs(this.state.smoothedVy));
 
-      if (wrist.y < hip.y) {
-        this.state.hipCrossedUpward = true;
+      if (wrist.y < hip.y) this.state.hipCrossedUpward = true;
+
+      const isAtShoulder = wrist.y <= (shoulder.y + 0.12) && wrist.y >= (shoulder.y - 0.08);
+      const nearlyStopped = Math.abs(this.state.smoothedVy) < this.THRESHOLDS.LOCKOUT_VY_CUTOFF;
+
+      // CLEAN DETECTION: Hold at shoulder for required frames
+      if (nearlyStopped && isAtShoulder && !hinged) {
+        this.state.shoulderHoldFrames++;
+        if (this.state.shoulderHoldFrames >= this.THRESHOLDS.CLEAN_HOLD_FRAMES) {
+          result = this.classify(this.state.movementStartPose, wrist, shoulder, hip, nose, hinged, this.state.hipCrossedUpward, true);
+          this.state.phase = "LOCKED";
+
+          // Auto-set RACK if clean finished at rack
+          if (result && result.type === "CLEAN" && atRack) {
+            this.state.currentPose = "RACK";
+            this.state.rackFrameCount = this.THRESHOLDS.RACK_LOCK_FRAMES;
+          }
+        }
+      } else if (nearlyStopped) {
+        // Quick lockout for other movements
+        result = this.classify(this.state.movementStartPose, wrist, shoulder, hip, nose, hinged, this.state.hipCrossedUpward, false);
+        this.state.phase = "LOCKED";
+      } else if (this.state.smoothedVy > this.THRESHOLDS.PULL_VELOCITY_TRIGGER && this.state.shoulderHoldFrames > 0) {
+        // Bell started falling before completing hold
+        result = this.classify(this.state.movementStartPose, wrist, shoulder, hip, nose, hinged, this.state.hipCrossedUpward, false);
+        this.state.phase = "LOCKED";
       }
 
-      if (Math.abs(this.state.smoothedVy) < this.THRESHOLDS.LOCKOUTVYCUTOFF) {
-        result = this.classify(this.state.movementStartPose, wrist, shoulder, hip, nose, hinged, this.state.hipCrossedUpward);
-        if (result) {
-          result.velocity = this.state.currentRepPeak;
-          this.state.phase = "LOCKED";
-        }
-      }
+      if (result) result.velocity = this.state.currentRepPeak;
+
     } else if (this.state.phase === "LOCKED") {
       if (wrist.y > hip.y || atRack) {
         this.state.phase = "IDLE";
@@ -248,25 +344,37 @@ class VBTStateMachine {
     return result;
   }
 
-  classify(start, w, s, h, nose, hinged, crossed) {
-    const isOverhead = w.y < nose.y - 0.05;
-    const isAtShoulder = w.y < s.y + 0.12 && w.y > s.y - 0.08;
+  classify(start, w, s, h, nose, hinged, crossed, heldAtShoulder) {
+    const isOverhead = w.y < (nose.y - 0.05);
 
-    if (start === "HINGE") {
+    // CLEAN from hinge/standing
+    if ((start === "HINGE" || start === "NONE") && crossed) {
       if (isOverhead) return { type: "SNATCH" };
-      if (isAtShoulder && !hinged && crossed) return { type: "CLEAN" };
-      if (w.y < h.y && w.y > s.y && crossed) return { type: "SWING" };
-    } else if (start === "RACK") {
-      if (isOverhead) return { type: "PRESS" };
+
+      // CLEAN: Held at shoulder
+      if (heldAtShoulder && w.y <= (s.y + 0.08)) return { type: "CLEAN" };
+
+      // SWING: Reached shoulder area but didn't hold
+      if (w.y <= (s.y + this.THRESHOLDS.SWING_HEIGHT_BUFFER) && w.y < h.y) return { type: "SWING" };
+    }
+
+    // RECLEAN: Started from rack, held at shoulder
+    if (start === "RACK" && heldAtShoulder) {
+      return { type: "CLEAN" };
+    }
+
+    // PRESS: Started from rack, went overhead
+    if (start === "RACK" && isOverhead) {
+      return { type: "PRESS" };
     }
 
     return null;
   }
 
   drawResetUI(ctx, canvas, pose) {
-    const centerX = ((pose.LEFT.SHOULDER.x + pose.RIGHT.SHOULDER.x) / 2) * canvas.width;
-    const centerY = ((pose.LEFT.SHOULDER.y + pose.LEFT.HIP.y) / 2) * canvas.height;
-    const pct = this.state.resetProgress / this.THRESHOLDS.RESETDURATIONFRAMES;
+    const centerX = (pose.LEFT.SHOULDER.x + pose.RIGHT.SHOULDER.x) / 2 * canvas.width;
+    const centerY = (pose.LEFT.SHOULDER.y + pose.LEFT.HIP.y) / 2 * canvas.height;
+    const pct = this.state.resetProgress / this.THRESHOLDS.RESET_DURATION_FRAMES;
 
     ctx.beginPath();
     ctx.arc(centerX, centerY, 40, 0, Math.PI * 2);
@@ -275,14 +383,14 @@ class VBTStateMachine {
     ctx.stroke();
 
     ctx.beginPath();
-    ctx.arc(centerX, centerY, 40, -Math.PI/2, -Math.PI/2 + (Math.PI * 2 * pct));
+    ctx.arc(centerX, centerY, 40, -Math.PI/2, (-Math.PI/2) + (Math.PI * 2 * pct));
     ctx.strokeStyle = "#3b82f6";
     ctx.lineWidth = 8;
     ctx.stroke();
   }
 }
 
-// === APP CORE (UNCHANGED FROM ORIGINAL) ===
+// === APP CORE ===
 const app = {
   video: null,
   canvas: null,
@@ -306,14 +414,11 @@ async function initializeApp() {
   document.getElementById("btn-start-test").onclick = toggleTest;
   document.getElementById("btn-reset").onclick = resetSession;
 
-  const saveBtn = document.getElementById("btn-save");
-  if (saveBtn) saveBtn.onclick = exportToMake;
-
   const vision = await FilesetResolver.forVisionTasks("https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/wasm");
   app.landmarker = await PoseLandmarker.createFromOptions(vision, {
     baseOptions: { 
-      modelAssetPath: "https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_full/float16/1/pose_landmarker_full.task", 
-      delegate: "GPU" 
+      modelAssetPath: "https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_full/float16/1/pose_landmarker_full.task",
+      delegate: "GPU"
     },
     runningMode: "VIDEO"
   });
@@ -331,7 +436,6 @@ function handleUpload(e) {
     app.canvas.width = app.video.videoWidth;
     app.canvas.height = app.video.videoHeight;
 
-    // NEW: Get height from input
     const heightInput = document.getElementById("height-input");
     const heightInches = parseFloat(heightInput?.value) || 68;
 
@@ -349,7 +453,6 @@ async function startCamera() {
     app.canvas.width = app.video.videoWidth;
     app.canvas.height = app.video.videoHeight;
 
-    // NEW: Get height from input
     const heightInput = document.getElementById("height-input");
     const heightInches = parseFloat(heightInput?.value) || 68;
 
@@ -363,11 +466,8 @@ async function startCamera() {
 function toggleTest() {
   app.isTestRunning = !app.isTestRunning;
   document.getElementById("btn-start-test").innerText = app.isTestRunning ? "PAUSE" : "START";
-  if (app.isTestRunning) {
-    app.video.play();
-  } else {
-    app.video.pause();
-  }
+  if (app.isTestRunning) app.video.play();
+  else app.video.pause();
 }
 
 async function masterLoop(ts) {
@@ -380,13 +480,12 @@ async function masterLoop(ts) {
   if (results?.landmarks?.length > 0) {
     const raw = results.landmarks[0];
 
-    // CORRECT LANDMARK INDICES
     const pose = {
       LEFT: { 
         WRIST: raw[15], 
         SHOULDER: raw[11], 
         HIP: raw[23], 
-        KNEE: raw[25],
+        KNEE: raw[25], 
         ANKLE: raw[27],
         ELBOW: raw[13],
         NOSE: raw[0]
@@ -395,12 +494,15 @@ async function masterLoop(ts) {
         WRIST: raw[16], 
         SHOULDER: raw[12], 
         HIP: raw[24], 
-        KNEE: raw[26],
+        KNEE: raw[26], 
         ANKLE: raw[28],
         ELBOW: raw[14],
         NOSE: raw[0]
       }
     };
+
+    // Draw skeleton always
+    drawDebugSkeleton(pose);
 
     if (app.isTestRunning && app.stateMachine) {
       const move = app.stateMachine.update(pose, ts, app.ctx, app.canvas);
@@ -410,17 +512,61 @@ async function masterLoop(ts) {
   }
 }
 
-// UNCHANGED - Original record function
+function drawDebugSkeleton(pose) {
+  const ctx = app.ctx;
+  const canvas = app.canvas;
+
+  for (const side of ['LEFT', 'RIGHT']) {
+    const color = side === 'LEFT' ? '#00ff00' : '#ff0000';
+    const wrist = pose[side].WRIST;
+    const elbow = pose[side].ELBOW;
+    const shoulder = pose[side].SHOULDER;
+    const hip = pose[side].HIP;
+    const knee = pose[side].KNEE;
+    const ankle = pose[side].ANKLE;
+
+    ctx.strokeStyle = color;
+    ctx.lineWidth = 3;
+    ctx.beginPath();
+    ctx.moveTo(wrist.x * canvas.width, wrist.y * canvas.height);
+    ctx.lineTo(elbow.x * canvas.width, elbow.y * canvas.height);
+    ctx.lineTo(shoulder.x * canvas.width, shoulder.y * canvas.height);
+    ctx.lineTo(hip.x * canvas.width, hip.y * canvas.height);
+    ctx.lineTo(knee.x * canvas.width, knee.y * canvas.height);
+    ctx.lineTo(ankle.x * canvas.width, ankle.y * canvas.height);
+    ctx.stroke();
+  }
+
+  const nose = pose.LEFT.NOSE;
+  const leftShoulder = pose.LEFT.SHOULDER;
+  const rightShoulder = pose.RIGHT.SHOULDER;
+
+  const shoulderWidth = Math.abs(leftShoulder.x - rightShoulder.x) * canvas.width;
+  const headSize = shoulderWidth * 0.35;
+
+  ctx.font = `${headSize}px Arial`;
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText('🙂', nose.x * canvas.width, nose.y * canvas.height);
+}
+
 function record(m) {
   app.totalReps++;
   app.lastMove = m.type;
   app.history[m.type].push(m.velocity);
 
-  const countEl = document.getElementById(`val-${m.type.toLowerCase()}s`);
-  if (countEl) countEl.innerText = app.history[m.type].length;
+  let plural = m.type.toLowerCase() + "s";
+  if (m.type === "PRESS") plural = "presses";
+  if (m.type === "SNATCH") plural = "snatches";
 
-  const moveEl = document.getElementById("detected-movement");
-  if (moveEl) moveEl.innerText = m.type;
+  const countEl = document.getElementById(`val-${plural}`);
+  const velEl = document.getElementById(`val-${m.type.toLowerCase()}-velocity`);
+
+  if (countEl) countEl.innerText = app.history[m.type].length;
+  if (velEl) velEl.innerText = m.velocity.toFixed(2);
+
+  document.getElementById("val-total-reps").innerText = app.totalReps;
+  document.getElementById("detected-movement").innerText = m.type;
 }
 
 function resetSession() {
@@ -428,48 +574,25 @@ function resetSession() {
   app.lastMove = "READY";
   app.history = { CLEAN: [], PRESS: [], SNATCH: [], SWING: [] };
 
-  if (app.video.src) {
-    app.video.pause();
-    app.video.currentTime = 0;
-  }
+  if (app.stateMachine) app.stateMachine.reset();
 
-  const countEls = ["val-cleans", "val-presses", "val-snatches", "val-swings", "val-total-reps"];
-  countEls.forEach(id => {
+  ['val-cleans', 'val-presses', 'val-snatches', 'val-swings', 'val-total-reps'].forEach(id => {
     const el = document.getElementById(id);
-    if (el) el.textContent = "0";
+    if (el) el.textContent = '0';
   });
 
-  const velEls = ["val-clean-velocity", "val-press-velocity", "val-snatch-velocity", "val-swing-velocity", "val-velocity"];
-  velEls.forEach(id => {
+  ['val-clean-velocity', 'val-press-velocity', 'val-snatch-velocity', 'val-swing-velocity', 'val-velocity'].forEach(id => {
     const el = document.getElementById(id);
-    if (el) el.textContent = "0.00";
+    if (el) el.textContent = '0.00';
   });
 
-  console.log("Session Reset");
+  document.getElementById("detected-movement").innerText = "READY";
 }
 
-// UNCHANGED - Original drawUI function
 function drawUI(s, p) {
   document.getElementById("val-velocity").innerText = Math.abs(s.smoothedVy).toFixed(2);
 
-  // --- ONSCREEN REP COUNTER ---
-  app.ctx.save();
-  app.ctx.fillStyle = "rgba(0, 0, 0, 0.6)";
-  app.ctx.fillRect(20, 20, 180, 90);
-
-  app.ctx.fillStyle = "#ffffff";
-  app.ctx.font = "bold 40px sans-serif";
-  app.ctx.fillText(app.totalReps, 40, 65);
-
-  app.ctx.font = "bold 14px sans-serif";
-  app.ctx.fillText("TOTAL REPS", 40, 85);
-
-  app.ctx.fillStyle = "#3b82f6";
-  app.ctx.font = "bold 18px sans-serif";
-  app.ctx.fillText(app.lastMove, 100, 65);
-  app.ctx.restore();
-
-  // --- TRACKING DOT ---
+  // Tracking dot on active wrist
   if (s.lockedSide !== "unknown") {
     const w = p[s.lockedSide].WRIST;
     app.ctx.fillStyle = "#10b981";
@@ -477,10 +600,6 @@ function drawUI(s, p) {
     app.ctx.arc(w.x * app.canvas.width, w.y * app.canvas.height, 12, 0, Math.PI * 2);
     app.ctx.fill();
   }
-}
-
-function exportToMake() {
-  console.log("Export functionality placeholder");
 }
 
 initializeApp();
