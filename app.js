@@ -399,18 +399,30 @@ function drawDebugSkeleton(pose) {
     const shoulder = pose[side].SHOULDER; 
     const hip = pose[side].HIP; 
     const knee = pose[side].KNEE;
-    const ankle = pose[side].ANKLE;  // Now drawing to ankle
+    const ankle = pose[side].ANKLE;
     
+    // Draw lines
     ctx.strokeStyle = color; 
-    ctx.lineWidth = 13; 
+    ctx.lineWidth = 13;
     ctx.beginPath();
     ctx.moveTo(wrist.x * canvas.width, wrist.y * canvas.height);
     ctx.lineTo(elbow.x * canvas.width, elbow.y * canvas.height);
     ctx.lineTo(shoulder.x * canvas.width, shoulder.y * canvas.height);
     ctx.lineTo(hip.x * canvas.width, hip.y * canvas.height);
     ctx.lineTo(knee.x * canvas.width, knee.y * canvas.height);
-    ctx.lineTo(ankle.x * canvas.width, ankle.y * canvas.height);  // Extended to ankle
+    ctx.lineTo(ankle.x * canvas.width, ankle.y * canvas.height);
     ctx.stroke();
+    
+    // Draw hollow circles at each joint
+    const joints = [wrist, elbow, shoulder, hip, knee, ankle];
+    ctx.strokeStyle = color;
+    ctx.lineWidth = 4;
+    
+    for (const joint of joints) {
+      ctx.beginPath();
+      ctx.arc(joint.x * canvas.width, joint.y * canvas.height, 12, 0, Math.PI * 2);
+      ctx.stroke();
+    }
   }
   
   // Draw 🙂 emoji at nose position
@@ -418,15 +430,15 @@ function drawDebugSkeleton(pose) {
   const leftShoulder = pose.LEFT.SHOULDER;
   const rightShoulder = pose.RIGHT.SHOULDER;
   
-  // Calculate head size based on shoulder width (natural proportions)
   const shoulderWidth = Math.abs(leftShoulder.x - rightShoulder.x) * canvas.width;
-  const headSize = shoulderWidth * 1.25;  // Head is roughly 35% of shoulder width
+  const headSize = shoulderWidth * 1.25;
   
   ctx.font = `${headSize}px Arial`;
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
   ctx.fillText('🙂', nose.x * canvas.width, nose.y * canvas.height);
 }
+
 
 function record(m) {
   app.totalReps++; 
