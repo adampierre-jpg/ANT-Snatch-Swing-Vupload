@@ -4,12 +4,13 @@ class VBTStateMachine {
   constructor(canvasHeight = 720) {
     this.canvasHeight = canvasHeight;
     this.THRESHOLDS = {
-      HINGE_DEPTH: 0.15, // NEW: Stricter - must be 15% below hip
+      HINGE_DEPTH: 0.05, // CHANGED: Back to sensitive detection
       RACK_LOCK_FRAMES: 30,
       PULL_VELOCITY_TRIGGER: 0.4,
       LOCKOUT_VY_CUTOFF: 0.6,
-      CLEAN_HOLD_FRAMES: 20, // Relaxed from 30
-      SHOULDER_ZONE: 0.15,
+      CLEAN_HOLD_FRAMES: 30,
+      SHOULDER_ZONE: 0.12,
+      SWING_HEIGHT_BUFFER: 0.08,
       VELOCITY_ALPHA: 0.15,
       POSITION_ALPHA: 0.3,
       TORSO_METERS: 0.45,
@@ -55,7 +56,7 @@ class VBTStateMachine {
             x: alpha * raw.x + (1 - alpha) * prev.x,
             y: alpha * raw.y + (1 - alpha) * prev.y,
             z: alpha * (raw.z || 0) + (1 - alpha) * (prev.z || 0)
-        };
+          };
       }
     }
     this.state.smoothedLandmarks = smoothed;
@@ -119,11 +120,12 @@ class VBTStateMachine {
     const velocity = this.calculateVelocity(wrist, timestamp);
     this.state.smoothedVy = (this.THRESHOLDS.VELOCITY_ALPHA * velocity.vy) + ((1 - this.THRESHOLDS.VELOCITY_ALPHA) * this.state.smoothedVy);
     
-    // STRICT HINGE DETECTION: Must be significantly below hip
-    const hingeDepth = wrist.y - hip.y;
-    if (hingeDepth > this.THRESHOLDS.HINGE_DEPTH) {
+    // Track hinge visit
+    if (wrist.y > hip.y + this.THRESHOLDS.HINGE_DEPTH) {
         this.state.hasVisitedHinge = true;
     }
+
+    const hinged = Math.abs(shoulder.y - hip.y) < 0.08;
 
     let result = null;
     if (this.state.phase === "IDLE") {
@@ -137,12 +139,12 @@ class VBTStateMachine {
       this.state.currentRepPeak = Math.max(this.state.currentRepPeak, Math.abs(this.state.smoothedVy));
       if (wrist.y < hip.y) this.state.hipCrossedUpward = true;
 
-      const isAtShoulder = Math.abs(wrist.y - shoulder.y) < this.THRESHOLDS.SHOULDER_ZONE;
+      const isAtShoulder = wrist.y <= (shoulder.y + this.THRESHOLDS.SHOULDER_ZONE) && wrist.y >= (shoulder.y - this.THRESHOLDS.SHOULDER_ZONE);
       const nearlyStopped = Math.abs(this.state.smoothedVy) < this.THRESHOLDS.LOCKOUT_VY_CUTOFF;
       const isOverhead = wrist.y < (nose.y - 0.05);
       
-      // CLEAN DETECTION: Hold at shoulder
-      if (nearlyStopped && isAtShoulder && !isOverhead) {
+      // CLEAN: Hold at shoulder for 1 second
+      if (nearlyStopped && isAtShoulder && !hinged && !isOverhead) {
         this.state.shoulderHoldFrames++;
         if (this.state.shoulderHoldFrames >= this.THRESHOLDS.CLEAN_HOLD_FRAMES) {
             if (this.state.hasVisitedHinge && this.state.hipCrossedUpward) {
@@ -151,32 +153,29 @@ class VBTStateMachine {
             this.state.phase = "LOCKED";
         }
       } 
-      // LOCKOUT DETECTION: Overhead or shoulder level
+      // LOCKOUT: Overhead or at shoulder without hold
       else if (nearlyStopped) {
         if (isOverhead) {
-            // It's overhead - Press or Snatch?
+            // Overhead = Press or Snatch
             if (this.state.hasVisitedHinge && this.state.hipCrossedUpward) {
                 result = { type: "SNATCH", velocity: this.state.currentRepPeak };
             } else {
                 result = { type: "PRESS", velocity: this.state.currentRepPeak };
             }
         } else if (this.state.hasVisitedHinge && this.state.hipCrossedUpward) {
-            // Not overhead but crossed hip = Swing
+            // At shoulder but didn't hold = Swing
             result = { type: "SWING", velocity: this.state.currentRepPeak };
         }
         this.state.phase = "LOCKED";
       }
     } else if (this.state.phase === "LOCKED") {
-      // Wait for movement to restart
       if (Math.abs(this.state.smoothedVy) > this.THRESHOLDS.PULL_VELOCITY_TRIGGER) {
           this.state.phase = "IDLE";
-          this.state.hasVisitedHinge = false; // Reset ONLY after entering new cycle
+          this.state.hasVisitedHinge = false;
       }
     }
     
-    // Draw skeleton overlay
     this.drawSkeleton(ctx, canvas, smoothedPose, side);
-    
     return result;
   }
 
@@ -199,7 +198,6 @@ class VBTStateMachine {
       ctx.lineTo(k.x * canvas.width, k.y * canvas.height);
       ctx.stroke();
       
-      // Draw dots
       [w, e, s, h, k].forEach(pt => {
           ctx.fillStyle = color;
           ctx.beginPath();
@@ -207,16 +205,6 @@ class VBTStateMachine {
           ctx.fill();
       });
     }
-  }
-
-  drawResetUI(ctx, canvas, pose) {
-    const centerX = (pose.LEFT.SHOULDER.x + pose.RIGHT.SHOULDER.x) / 2 * canvas.width;
-    const centerY = (pose.LEFT.SHOULDER.y + pose.LEFT.HIP.y) / 2 * canvas.height;
-    const pct = this.state.resetProgress / this.THRESHOLDS.RESET_DURATION_FRAMES;
-    ctx.beginPath(); ctx.arc(centerX, centerY, 40, 0, Math.PI * 2);
-    ctx.strokeStyle = "rgba(255,255,255,0.2)"; ctx.lineWidth = 8; ctx.stroke();
-    ctx.beginPath(); ctx.arc(centerX, centerY, 40, -Math.PI/2, (-Math.PI/2) + (Math.PI * 2 * pct));
-    ctx.strokeStyle = "#3b82f6"; ctx.stroke();
   }
 }
 
