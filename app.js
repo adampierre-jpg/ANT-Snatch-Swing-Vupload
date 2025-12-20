@@ -1,4 +1,4 @@
-/* VBT Calibration System v4.0 - Real Body Measurements */
+/* VBT v4.0 - WORKING VERSION + Calibration System */
 import { PoseLandmarker, FilesetResolver } from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/vision_bundle.mjs";
 
 class VBTStateMachine {
@@ -16,17 +16,19 @@ class VBTStateMachine {
       PULLVELOCITYTRIGGER: 0.4,
       LOCKOUTVYCUTOFF: 0.6,
       VELOCITYALPHA: 0.15,
-      RESETDURATIONFRAMES: 30, // 1 second at 30fps
-      NOSETOHEADCM: 11 // Average offset from nose to top of head
+      TORSOMETERS: 0.45,
+      RESETDURATIONFRAMES: 30,
+      NOSETOHEADCM: 11 // NEW: For calibration
     };
 
-    // Enhanced calibration data
+    // ENHANCED: Calibration data (ADDED BODY MEASUREMENTS)
     this.calibrationData = {
       isCalibrated: false,
       framesCaptured: 0,
       neutralWristOffset: 0,
+      maxTorsoLength: 0,
 
-      // Pixel measurements (accumulated over 30 frames)
+      // NEW: Pixel measurements
       ankleToNosePixels: 0,
       shoulderToHipPixels: 0,
       hipToKneePixels: 0,
@@ -34,7 +36,7 @@ class VBTStateMachine {
       shoulderToElbowPixels: 0,
       elbowToWristPixels: 0,
 
-      // Real measurements in cm (calculated after calibration)
+      // NEW: Real measurements in cm
       pixelToCmRatio: 0,
       torsoLengthCm: 0,
       thighLengthCm: 0,
@@ -42,7 +44,6 @@ class VBTStateMachine {
       upperArmLengthCm: 0,
       forearmLengthCm: 0,
       fullHeightCm: 0,
-
       userHeightInches: 0
     };
 
@@ -66,6 +67,7 @@ class VBTStateMachine {
     };
   }
 
+  // NEW: Set user height method
   setUserHeight(inches) {
     this.calibrationData.userHeightInches = inches;
     this.calibrationData.fullHeightCm = inches * 2.54;
@@ -79,21 +81,18 @@ class VBTStateMachine {
     const leftWristOffset = pose.LEFT.WRIST.y - pose.LEFT.HIP.y;
     const rightWristOffset = pose.RIGHT.WRIST.y - pose.RIGHT.HIP.y;
 
-    // --- 1. CALIBRATION PHASE (30 frames) ---
+    // --- 1. CALIBRATION PHASE (ENHANCED) ---
     if (!this.calibrationData.isCalibrated) {
       this.calibrationData.framesCaptured++;
-
-      // Accumulate neutral wrist position
       this.calibrationData.neutralWristOffset += (leftWristOffset + rightWristOffset) / 2;
+      this.calibrationData.maxTorsoLength = Math.max(this.calibrationData.maxTorsoLength, currentTorso);
 
-      // Accumulate body measurements in pixels (average of left and right sides)
+      // NEW: Accumulate body measurements
       const ankle = (pose.LEFT.ANKLE.y + pose.RIGHT.ANKLE.y) / 2;
       const nose = (pose.LEFT.NOSE.y + pose.RIGHT.NOSE.y) / 2;
       const shoulder = (pose.LEFT.SHOULDER.y + pose.RIGHT.SHOULDER.y) / 2;
       const hip = (pose.LEFT.HIP.y + pose.RIGHT.HIP.y) / 2;
       const knee = (pose.LEFT.KNEE.y + pose.RIGHT.KNEE.y) / 2;
-
-      // Use left side for arm measurements
       const elbow = pose.LEFT.ELBOW.y;
       const wrist = pose.LEFT.WRIST.y;
 
@@ -104,9 +103,8 @@ class VBTStateMachine {
       this.calibrationData.shoulderToElbowPixels += Math.abs(shoulder - elbow);
       this.calibrationData.elbowToWristPixels += Math.abs(elbow - wrist);
 
-      // Complete calibration after 30 frames
       if (this.calibrationData.framesCaptured >= 30) {
-        // Average all measurements
+        // Average measurements
         this.calibrationData.neutralWristOffset /= 30;
         this.calibrationData.ankleToNosePixels /= 30;
         this.calibrationData.shoulderToHipPixels /= 30;
@@ -115,11 +113,11 @@ class VBTStateMachine {
         this.calibrationData.shoulderToElbowPixels /= 30;
         this.calibrationData.elbowToWristPixels /= 30;
 
-        // Calculate pixel-to-cm conversion ratio
+        // Calculate pixel-to-cm conversion
         const ankleToNoseCm = this.calibrationData.fullHeightCm - this.THRESHOLDS.NOSETOHEADCM;
         this.calibrationData.pixelToCmRatio = ankleToNoseCm / this.calibrationData.ankleToNosePixels;
 
-        // Convert all measurements to cm
+        // Convert to cm
         this.calibrationData.torsoLengthCm = this.calibrationData.shoulderToHipPixels * this.calibrationData.pixelToCmRatio;
         this.calibrationData.thighLengthCm = this.calibrationData.hipToKneePixels * this.calibrationData.pixelToCmRatio;
         this.calibrationData.shinLengthCm = this.calibrationData.kneeToAnklePixels * this.calibrationData.pixelToCmRatio;
@@ -129,30 +127,20 @@ class VBTStateMachine {
         this.calibrationData.isCalibrated = true;
 
         console.log("=== CALIBRATION COMPLETE ===");
-        console.log(`Height: ${this.calibrationData.userHeightInches}" (${this.calibrationData.fullHeightCm.toFixed(1)} cm)`);
-        console.log(`Pixel-to-CM Ratio: ${this.calibrationData.pixelToCmRatio.toFixed(4)} cm/pixel`);
         console.log(`Torso: ${this.calibrationData.torsoLengthCm.toFixed(1)} cm`);
-        console.log(`Thigh: ${this.calibrationData.thighLengthCm.toFixed(1)} cm`);
-        console.log(`Shin: ${this.calibrationData.shinLengthCm.toFixed(1)} cm`);
-        console.log(`Upper Arm: ${this.calibrationData.upperArmLengthCm.toFixed(1)} cm`);
-        console.log(`Forearm: ${this.calibrationData.forearmLengthCm.toFixed(1)} cm`);
-        console.log("============================");
+        console.log(`Pixel-to-CM Ratio: ${this.calibrationData.pixelToCmRatio.toFixed(4)}`);
       }
-
-      // Show calibration progress
-      this.drawCalibrationUI(ctx, canvas, pose, this.calibrationData.framesCaptured);
       return null;
     }
 
-    // --- 2. FLEXIBLE UNLOCK (Hand Reset) ---
+    // --- 2. FLEXIBLE UNLOCK (UNCHANGED) ---
     const leftAtHome = Math.abs(leftWristOffset - this.calibrationData.neutralWristOffset) < 0.10;
     const rightAtHome = Math.abs(rightWristOffset - this.calibrationData.neutralWristOffset) < 0.10;
-    const isTall = currentTorso > (this.calibrationData.shoulderToHipPixels * 0.85);
+    const isTall = currentTorso > (this.calibrationData.maxTorsoLength * 0.85);
 
     if (leftAtHome && rightAtHome && isTall) {
       this.state.resetProgress++;
       this.drawResetUI(ctx, canvas, pose);
-
       if (this.state.resetProgress >= this.THRESHOLDS.RESETDURATIONFRAMES) {
         console.log("✅ Flexible Unlock Triggered");
         this.reset();
@@ -162,7 +150,7 @@ class VBTStateMachine {
       this.state.resetProgress = 0;
     }
 
-    // --- 3. SIDE LOCKING ---
+    // --- 3. SIDE LOCKING (UNCHANGED) ---
     if (this.state.lockedSide === "unknown") {
       if (Math.abs(pose.LEFT.WRIST.y - pose.RIGHT.WRIST.y) > 0.1) {
         this.state.lockedSide = pose.LEFT.WRIST.y < pose.RIGHT.WRIST.y ? "LEFT" : "RIGHT";
@@ -177,9 +165,14 @@ class VBTStateMachine {
     const shoulder = pose[side].SHOULDER;
     const nose = pose[side].NOSE;
 
-    // --- 4. VELOCITY CALCULATION (using real torso length in cm) ---
+    // --- 4. VELOCITY CALCULATION (ENHANCED) ---
     if (!this.state.calibration && shoulder && hip) {
-      this.state.calibration = this.calibrationData.torsoLengthCm / 100; // Convert to meters
+      // NEW: Use real torso length if available, otherwise use old method
+      if (this.calibrationData.torsoLengthCm > 0) {
+        this.state.calibration = this.calibrationData.torsoLengthCm / 100; // Convert to meters
+      } else {
+        this.state.calibration = Math.abs(shoulder.y - hip.y) * this.canvasHeight * this.THRESHOLDS.TORSOMETERS;
+      }
     }
 
     if (this.state.lastTimestamp > 0 && this.state.calibration) {
@@ -187,9 +180,15 @@ class VBTStateMachine {
       const dt = (timestamp - this.state.lastTimestamp) / 1000;
 
       if (dt > 0 && dt < 0.1) {
-        // Convert pixel displacement to meters using pixel-to-cm ratio
-        const dyMeters = (dy * this.calibrationData.pixelToCmRatio) / 100;
-        const vy = dyMeters / dt;
+        let vy;
+        // NEW: Use pixel-to-cm ratio if calibrated
+        if (this.calibrationData.pixelToCmRatio > 0) {
+          const dyMeters = (dy * this.calibrationData.pixelToCmRatio) / 100;
+          vy = dyMeters / dt;
+        } else {
+          // OLD METHOD: Fallback
+          vy = dy / this.state.calibration / dt;
+        }
         this.state.smoothedVy = this.THRESHOLDS.VELOCITYALPHA * vy + (1 - this.THRESHOLDS.VELOCITYALPHA) * this.state.smoothedVy;
       }
     }
@@ -197,7 +196,7 @@ class VBTStateMachine {
     this.state.lastTimestamp = timestamp;
     this.state.lastWristY = wrist.y;
 
-    // --- 5. POSE DETECTION ---
+    // --- 5. POSE DETECTION (UNCHANGED) ---
     const hinged = Math.abs(shoulder.y - hip.y) < this.THRESHOLDS.HINGE;
     const atRack = Math.abs(wrist.y - shoulder.y) < 0.15 && 
                    Math.abs(wrist.x - (pose.LEFT.SHOULDER.x + pose.RIGHT.SHOULDER.x)/2) < 0.2;
@@ -216,7 +215,7 @@ class VBTStateMachine {
       this.state.currentPose = "NONE";
     }
 
-    // --- 6. MOVEMENT LOGIC ---
+    // --- 6. MOVEMENT LOGIC (UNCHANGED) ---
     let result = null;
 
     if (this.state.phase === "IDLE") {
@@ -264,34 +263,6 @@ class VBTStateMachine {
     return null;
   }
 
-  drawCalibrationUI(ctx, canvas, pose, frames) {
-    const centerX = ((pose.LEFT.SHOULDER.x + pose.RIGHT.SHOULDER.x) / 2) * canvas.width;
-    const centerY = ((pose.LEFT.SHOULDER.y + pose.LEFT.HIP.y) / 2) * canvas.height;
-    const pct = frames / 30;
-
-    // Background circle
-    ctx.beginPath();
-    ctx.arc(centerX, centerY, 60, 0, Math.PI * 2);
-    ctx.strokeStyle = "rgba(255,255,255,0.2)";
-    ctx.lineWidth = 10;
-    ctx.stroke();
-
-    // Progress arc
-    ctx.beginPath();
-    ctx.arc(centerX, centerY, 60, -Math.PI/2, -Math.PI/2 + (Math.PI * 2 * pct));
-    ctx.strokeStyle = "#10b981";
-    ctx.lineWidth = 10;
-    ctx.stroke();
-
-    // Text
-    ctx.fillStyle = "#fff";
-    ctx.font = "bold 20px sans-serif";
-    ctx.textAlign = "center";
-    ctx.fillText("CALIBRATING", centerX, centerY - 10);
-    ctx.font = "16px sans-serif";
-    ctx.fillText(`${frames}/30`, centerX, centerY + 15);
-  }
-
   drawResetUI(ctx, canvas, pose) {
     const centerX = ((pose.LEFT.SHOULDER.x + pose.RIGHT.SHOULDER.x) / 2) * canvas.width;
     const centerY = ((pose.LEFT.SHOULDER.y + pose.LEFT.HIP.y) / 2) * canvas.height;
@@ -311,7 +282,7 @@ class VBTStateMachine {
   }
 }
 
-// === APP CORE ===
+// === APP CORE (UNCHANGED FROM ORIGINAL) ===
 const app = {
   video: null,
   canvas: null,
@@ -340,7 +311,10 @@ async function initializeApp() {
 
   const vision = await FilesetResolver.forVisionTasks("https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/wasm");
   app.landmarker = await PoseLandmarker.createFromOptions(vision, {
-    baseOptions: { modelAssetPath: "https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_full/float16/1/pose_landmarker_full.task", delegate: "GPU" },
+    baseOptions: { 
+      modelAssetPath: "https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_full/float16/1/pose_landmarker_full.task", 
+      delegate: "GPU" 
+    },
     runningMode: "VIDEO"
   });
 
@@ -357,9 +331,9 @@ function handleUpload(e) {
     app.canvas.width = app.video.videoWidth;
     app.canvas.height = app.video.videoHeight;
 
-    // Get height from input and initialize state machine
+    // NEW: Get height from input
     const heightInput = document.getElementById("height-input");
-    const heightInches = parseFloat(heightInput.value) || 68; // Default 68" if not set
+    const heightInches = parseFloat(heightInput?.value) || 68;
 
     app.stateMachine = new VBTStateMachine(app.canvas.height);
     app.stateMachine.setUserHeight(heightInches);
@@ -375,8 +349,9 @@ async function startCamera() {
     app.canvas.width = app.video.videoWidth;
     app.canvas.height = app.video.videoHeight;
 
+    // NEW: Get height from input
     const heightInput = document.getElementById("height-input");
-    const heightInches = parseFloat(heightInput.value) || 68;
+    const heightInches = parseFloat(heightInput?.value) || 68;
 
     app.stateMachine = new VBTStateMachine(app.canvas.height);
     app.stateMachine.setUserHeight(heightInches);
@@ -404,9 +379,27 @@ async function masterLoop(ts) {
   const results = app.landmarker.detectForVideo(app.video, ts);
   if (results?.landmarks?.length > 0) {
     const raw = results.landmarks[0];
+
+    // CORRECT LANDMARK INDICES
     const pose = {
-      LEFT: { WRIST: raw[15], SHOULDER: raw[11], HIP: raw[23], KNEE: raw[25], ANKLE: raw[27], ELBOW: raw[13], NOSE: raw[0] },
-      RIGHT: { WRIST: raw[16], SHOULDER: raw[12], HIP: raw[24], KNEE: raw[26], ANKLE: raw[28], ELBOW: raw[14], NOSE: raw[0] }
+      LEFT: { 
+        WRIST: raw[15], 
+        SHOULDER: raw[11], 
+        HIP: raw[23], 
+        KNEE: raw[25],
+        ANKLE: raw[27],
+        ELBOW: raw[13],
+        NOSE: raw[0]
+      },
+      RIGHT: { 
+        WRIST: raw[16], 
+        SHOULDER: raw[12], 
+        HIP: raw[24], 
+        KNEE: raw[26],
+        ANKLE: raw[28],
+        ELBOW: raw[14],
+        NOSE: raw[0]
+      }
     };
 
     if (app.isTestRunning && app.stateMachine) {
@@ -417,6 +410,7 @@ async function masterLoop(ts) {
   }
 }
 
+// UNCHANGED - Original record function
 function record(m) {
   app.totalReps++;
   app.lastMove = m.type;
@@ -454,9 +448,11 @@ function resetSession() {
   console.log("Session Reset");
 }
 
+// UNCHANGED - Original drawUI function
 function drawUI(s, p) {
   document.getElementById("val-velocity").innerText = Math.abs(s.smoothedVy).toFixed(2);
 
+  // --- ONSCREEN REP COUNTER ---
   app.ctx.save();
   app.ctx.fillStyle = "rgba(0, 0, 0, 0.6)";
   app.ctx.fillRect(20, 20, 180, 90);
@@ -473,6 +469,7 @@ function drawUI(s, p) {
   app.ctx.fillText(app.lastMove, 100, 65);
   app.ctx.restore();
 
+  // --- TRACKING DOT ---
   if (s.lockedSide !== "unknown") {
     const w = p[s.lockedSide].WRIST;
     app.ctx.fillStyle = "#10b981";
