@@ -317,7 +317,7 @@ class VBTStateMachine {
   // ✅ FIXED CLASSIFICATION LOGIC
   classify(start, w, s, h, nose, hinged, crossed) {
     const isOverhead = w.y < (nose.y - 0.05);
-    const isAtShoulder = w.y <= (s.y + 0.12) && w.y >= (s.y - 0.08);
+    const isAtShoulder = w.y <= (s.y + 0.15) && w.y >= (s.y - 0.08);
 
     // From HINGE or standing position
     if (start === "HINGE" || start === "NONE") {
