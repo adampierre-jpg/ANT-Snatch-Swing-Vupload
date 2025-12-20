@@ -1,131 +1,85 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>VBT v3.6 - Movement Detection</title>
-  <link rel="stylesheet" href="style.css">
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>VBT Performance Dashboard</title>
+    <link rel="stylesheet" href="style.css">
 </head>
 <body>
-  <div id="loading-overlay">
-    <div class="loading-spinner"></div>
-    <p>Loading Vision System...</p>
-  </div>
+    <div class="app-container">
+        <!-- Header Section -->
+        <header class="main-header">
+            <div class="brand">
+                <h1>VBT <span class="accent">4.1</span></h1>
+                <div class="status-dot" id="status-indicator"></div>
+            </div>
+            <div class="total-reps-pill">
+                <span class="label">TOTAL REPS</span>
+                <span id="val-total-reps" class="count">0</span>
+            </div>
+        </header>
 
-  <div class="container">
-    <!-- Status Bar -->
-    <div class="status-bar">
-      <div id="status-pill" class="status-pill">Initializing...</div>
+        <!-- Video/Tracking Section -->
+        <section class="vision-container">
+            <video id="video" playsinline muted hidden></video>
+            <canvas id="canvas"></canvas>
+            <div class="movement-overlay">
+                <span id="detected-movement">READY</span>
+                <div class="live-velocity">
+                    <span id="val-velocity">0.00</span><small>m/s</small>
+                </div>
+            </div>
+        </section>
+
+        <!-- Dashboard Grid -->
+        <main class="dashboard-grid">
+            <!-- Swings -->
+            <div class="stat-card swing">
+                <div class="card-header">SWINGS</div>
+                <div class="card-body">
+                    <div class="main-val" id="val-swings">0</div>
+                    <div class="sub-val"><span id="val-swing-velocity">0.00</span> m/s</div>
+                </div>
+            </div>
+
+            <!-- Cleans -->
+            <div class="stat-card clean">
+                <div class="card-header">CLEANS</div>
+                <div class="card-body">
+                    <div class="main-val" id="val-cleans">0</div>
+                    <div class="sub-val"><span id="val-clean-velocity">0.00</span> m/s</div>
+                </div>
+            </div>
+
+            <!-- Snatches -->
+            <div class="stat-card snatch">
+                <div class="card-header">SNATCHES</div>
+                <div class="card-body">
+                    <div class="main-val" id="val-snatches">0</div>
+                    <div class="sub-val"><span id="val-snatch-velocity">0.00</span> m/s</div>
+                </div>
+            </div>
+
+            <!-- Presses -->
+            <div class="stat-card press">
+                <div class="card-header">PRESSES</div>
+                <div class="card-body">
+                    <div class="main-val" id="val-presses">0</div>
+                    <div class="sub-val"><span id="val-press-velocity">0.00</span> m/s</div>
+                </div>
+            </div>
+        </main>
+
+        <!-- Controls Bar -->
+        <footer class="controls-bar">
+            <button id="btn-camera" class="btn secondary">CAMERA</button>
+            <label for="file-input" class="btn secondary">UPLOAD</label>
+            <input type="file" id="file-input" accept="video/*" hidden>
+            <button id="btn-start-test" class="btn primary" disabled>START</button>
+            <button id="btn-reset" class="btn danger">RESET</button>
+        </footer>
     </div>
-
-    <!-- Video Section -->
-    <div class="video-section">
-      <canvas id="canvas"></canvas>
-      <video id="video" playsinline muted></video>
-    </div>
-
-    <!-- Controls -->
-    <div class="controls">
-      <button id="btn-camera" class="btn btn-primary">Start Camera</button>
-      <input type="file" id="file-input" accept="video/*" class="file-input">
-      <button id="btn-start-test" class="btn btn-success" disabled>Start Test</button>
-      <button id="btn-reset" class="btn btn-secondary" disabled>Reset</button>
-    </div>
-
-    <!-- Metrics Grid -->
-    <div class="metrics-grid">
-      <!-- Cleans -->
-      <div class="metric-card">
-        <h3>Cleans</h3>
-        <div class="metric-value" id="val-cleans">0</div>
-        <div class="metric-details">
-          <div>Peak Velocity: <span id="val-clean-velocity">0.00</span> m/s</div>
-          <div>Drop: <span id="val-clean-drop">--</span></div>
-        </div>
-      </div>
-
-      <!-- Presses -->
-      <div class="metric-card">
-        <h3>Presses</h3>
-        <div class="metric-value" id="val-presses">0</div>
-        <div class="metric-details">
-          <div>Peak Velocity: <span id="val-press-velocity">0.00</span> m/s</div>
-          <div>Drop: <span id="val-press-drop">--</span></div>
-        </div>
-      </div>
-
-      <!-- Snatches -->
-      <div class="metric-card">
-        <h3>Snatches</h3>
-        <div class="metric-value" id="val-snatches">0</div>
-        <div class="metric-details">
-          <div>Peak Velocity: <span id="val-snatch-velocity">0.00</span> m/s</div>
-          <div>Drop: <span id="val-snatch-drop">--</span></div>
-        </div>
-      </div>
-
-      <!-- Swings -->
-      <div class="metric-card">
-        <h3>Swings</h3>
-        <div class="metric-value" id="val-swings">0</div>
-        <div class="metric-details">
-          <div>Peak Velocity: <span id="val-swing-velocity">0.00</span> m/s</div>
-          <div>Drop: <span id="val-swing-drop">--</span></div>
-        </div>
-      </div>
-
-      <!-- Rows (NEW) -->
-      <div class="metric-card">
-        <h3>Rows</h3>
-        <div class="metric-value" id="val-rows">0</div>
-        <div class="metric-details">
-          <div>Peak Velocity: <span id="val-row-velocity">0.00</span> m/s</div>
-          <div>Drop: <span id="val-row-drop">--</span></div>
-        </div>
-      </div>
-
-      <!-- Live Velocity -->
-      <div class="metric-card">
-        <h3>Live Velocity</h3>
-        <div class="metric-value" id="val-velocity">0.00</div>
-        <div class="metric-label">m/s</div>
-      </div>
-
-      <!-- Total Reps -->
-      <div class="metric-card">
-        <h3>Total Reps</h3>
-        <div class="metric-value" id="val-total-reps">0</div>
-      </div>
-    </div>
-
-    <!-- Movement Detection Panel -->
-    <div class="movement-panel">
-      <div class="panel-header">
-        <h3>Movement Detection</h3>
-        <div class="status-indicator detecting" id="detection-status"></div>
-      </div>
-      <div class="movement-info">
-        <div class="info-row">
-          <span class="info-label">Movement:</span>
-          <span class="movement-text" id="detected-movement">Waiting...</span>
-        </div>
-        <div class="info-row">
-          <span class="info-label">Configuration:</span>
-          <span id="detected-config">—</span>
-        </div>
-        <div class="info-row">
-          <span class="info-label">Active Hand:</span>
-          <span id="active-hands">—</span>
-        </div>
-      </div>
-    </div>
-
-    <!-- Export -->
-    <div class="export-section">
-      <button id="btn-save" class="btn btn-primary">Export to Make.com</button>
-    </div>
-  </div>
-
-  <script type="module" src="app.js"></script>
+    <script type="module" src="app.js"></script>
 </body>
 </html>
