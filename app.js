@@ -13,8 +13,8 @@ class VBTStateMachine {
       OVERHEAD_MIN_HEIGHT: 0.05,
       PULL_VELOCITY_TRIGGER: 0.4,
       LOCKOUT_VY_CUTOFF: 0.6,
-      CLEAN_HOLD_FRAMES: 30,  // NEW: 1 second hold at 30fps
-      CLEAN_HOLD_VY: 0.3,      // NEW: Max velocity during hold
+      CLEAN_HOLD_FRAMES: 30,  
+      CLEAN_HOLD_VY: 0.3,     
       SWING_HEIGHT_BUFFER: 0.08,
       VELOCITY_ALPHA: 0.15,
       POSITION_ALPHA: 0.3,
@@ -46,7 +46,7 @@ class VBTStateMachine {
       currentRepPeak: 0,
       hipCrossedUpward: false,
       wristStartedBelowHip: false,
-      shoulderHoldFrames: 0,  // NEW: Track time at shoulder
+      shoulderHoldFrames: 0, 
       smoothedVy: 0,
       lastTimestamp: 0,
       lastWristY: null,
@@ -161,7 +161,6 @@ class VBTStateMachine {
       this.drawResetUI(ctx, canvas, smoothedPose);
 
       if (this.state.resetProgress > this.THRESHOLDS.RESET_DURATION_FRAMES) {
-        console.log("↺ Flexible Unlock Triggered");
         this.reset();
         return null;
       }
@@ -218,42 +217,34 @@ class VBTStateMachine {
         this.state.currentRepPeak = 0;
         this.state.hipCrossedUpward = false;
         this.state.wristStartedBelowHip = wrist.y > hip.y;
-        this.state.shoulderHoldFrames = 0;  // NEW: Reset hold counter
-        console.log(`→ PULLING started from ${this.state.currentPose}`);
+        this.state.shoulderHoldFrames = 0;
       }
     } else if (this.state.phase === "PULLING") {
       this.state.currentRepPeak = Math.max(this.state.currentRepPeak, Math.abs(this.state.smoothedVy));
       
-      if (this.state.wristStartedBelowHip && wrist.y < hip.y) {
-        this.state.hipCrossedUpward = true;
-      }
-      if (wrist.y < hip.y) {
-        this.state.hipCrossedUpward = true;
-      }
-      
-      // NEW: Track shoulder hold time
+      if (wrist.y < hip.y) this.state.hipCrossedUpward = true;
+
       const isAtShoulder = wrist.y <= (shoulder.y + 0.12) && wrist.y >= (shoulder.y - 0.08);
-      if (isAtShoulder && Math.abs(this.state.smoothedVy) < this.THRESHOLDS.CLEAN_HOLD_VY && !hinged) {
-        this.state.shoulderHoldFrames++;
-        console.log(`Holding at shoulder: ${this.state.shoulderHoldFrames} frames`);
-      } else {
-        this.state.shoulderHoldFrames = 0;
-      }
+      const nearlyStopped = Math.abs(this.state.smoothedVy) < this.THRESHOLDS.LOCKOUT_VY_CUTOFF;
       
-      // Check if held long enough for clean
-      if (this.state.shoulderHoldFrames >= this.THRESHOLDS.CLEAN_HOLD_FRAMES) {
-        console.log(`→ CLEAN LOCKOUT - Held for ${this.state.shoulderHoldFrames} frames`);
-        result = this.classify(this.state.movementStartPose, wrist, shoulder, hip, nose, hinged, this.state.hipCrossedUpward, true);
-        if (result) result.velocity = this.state.currentRepPeak;
-        this.state.phase = "LOCKED";
-      }
-      // Or check for swing/snatch lockout (quick pass-through)
-      else if (Math.abs(this.state.smoothedVy) < this.THRESHOLDS.LOCKOUT_VY_CUTOFF) {
-        console.log(`→ SWING/SNATCH LOCKOUT - Quick pass, only ${this.state.shoulderHoldFrames} frames`);
+      // DECISION LOGIC
+      if (nearlyStopped && isAtShoulder && !hinged) {
+        this.state.shoulderHoldFrames++;
+        if (this.state.shoulderHoldFrames >= this.THRESHOLDS.CLEAN_HOLD_FRAMES) {
+            result = this.classify(this.state.movementStartPose, wrist, shoulder, hip, nose, hinged, this.state.hipCrossedUpward, true);
+            this.state.phase = "LOCKED";
+        }
+      } else if (nearlyStopped && !isAtShoulder) {
+        // Quick lockout for Snatches or non-shoulder movements
         result = this.classify(this.state.movementStartPose, wrist, shoulder, hip, nose, hinged, this.state.hipCrossedUpward, false);
-        if (result) result.velocity = this.state.currentRepPeak;
+        this.state.phase = "LOCKED";
+      } else if (this.state.smoothedVy > this.THRESHOLDS.PULL_VELOCITY_TRIGGER && isAtShoulder) {
+        // Bell started falling while at shoulder height without holding for 1s
+        result = this.classify(this.state.movementStartPose, wrist, shoulder, hip, nose, hinged, this.state.hipCrossedUpward, false);
         this.state.phase = "LOCKED";
       }
+
+      if (result) result.velocity = this.state.currentRepPeak;
     } else if (this.state.phase === "LOCKED") {
       if (wrist.y > hip.y || atRack) {
         this.state.phase = "IDLE";
@@ -264,32 +255,16 @@ class VBTStateMachine {
   }
 
   classify(start, w, s, h, nose, hinged, crossed, heldAtShoulder) {
-    const isOverhead = w.y < (nose.y - 0.05);
+    const isOverhead = w.y < (nose.y - 0.05); // Fixed offset per instruction
     const isAtShoulder = w.y <= (s.y + 0.12) && w.y >= (s.y - 0.08);
     
     if ((start === "HINGE" || start === "NONE") && crossed) {
-      if (isOverhead) {
-        console.log("✅ SNATCH detected");
-        return { type: "SNATCH" };
-      }
-      
-      // NEW: CLEAN requires 1-second hold at shoulder
-      if (heldAtShoulder && isAtShoulder && !hinged) {
-        console.log("✅ CLEAN detected (held at shoulder)");
-        return { type: "CLEAN" };
-      }
-      
-      // SWING: Quick pass-through at shoulder height
-      if (w.y <= (s.y + this.THRESHOLDS.SWING_HEIGHT_BUFFER) && w.y < h.y) {
-        console.log("✅ SWING detected (quick pass)");
-        return { type: "SWING" };
-      }
+      if (isOverhead) return { type: "SNATCH" };
+      if (heldAtShoulder && isAtShoulder && !hinged) return { type: "CLEAN" };
+      if (w.y <= (s.y + this.THRESHOLDS.SWING_HEIGHT_BUFFER) && w.y < h.y) return { type: "SWING" };
     } else if (start === "RACK" && isOverhead) {
-      console.log("✅ PRESS detected");
       return { type: "PRESS" };
     }
-    
-    console.log(`❌ No movement classified`);
     return null;
   }
 
@@ -298,29 +273,16 @@ class VBTStateMachine {
     const centerY = (pose.LEFT.SHOULDER.y + pose.LEFT.HIP.y) / 2 * canvas.height;
     const pct = this.state.resetProgress / this.THRESHOLDS.RESET_DURATION_FRAMES;
     
-    ctx.beginPath();
-    ctx.arc(centerX, centerY, 40, 0, Math.PI * 2);
-    ctx.strokeStyle = "rgba(255,255,255,0.2)";
-    ctx.lineWidth = 8;
-    ctx.stroke();
-
-    ctx.beginPath();
-    ctx.arc(centerX, centerY, 40, -Math.PI/2, (-Math.PI/2) + (Math.PI * 2 * pct));
-    ctx.strokeStyle = "#3b82f6";
-    ctx.stroke();
+    ctx.beginPath(); ctx.arc(centerX, centerY, 40, 0, Math.PI * 2);
+    ctx.strokeStyle = "rgba(255,255,255,0.2)"; ctx.lineWidth = 8; ctx.stroke();
+    ctx.beginPath(); ctx.arc(centerX, centerY, 40, -Math.PI/2, (-Math.PI/2) + (Math.PI * 2 * pct));
+    ctx.strokeStyle = "#3b82f6"; ctx.stroke();
   }
 }
 
 const app = {
-  video: null, 
-  canvas: null, 
-  ctx: null, 
-  landmarker: null, 
-  stateMachine: null,
-  isModelLoaded: false, 
-  isTestRunning: false,
-  totalReps: 0,
-  lastMove: "READY",
+  video: null, canvas: null, ctx: null, landmarker: null, stateMachine: null,
+  isModelLoaded: false, isTestRunning: false, totalReps: 0, lastMove: "READY",
   history: { CLEAN: [], PRESS: [], SNATCH: [], SWING: [] }
 };
 
@@ -334,15 +296,9 @@ async function initializeApp() {
   document.getElementById("btn-start-test").onclick = toggleTest;
   document.getElementById("btn-reset").onclick = resetSession;
 
-  const saveBtn = document.getElementById("btn-save");
-  if (saveBtn) saveBtn.onclick = exportToMake;
-  
   const vision = await FilesetResolver.forVisionTasks("https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/wasm");
   app.landmarker = await PoseLandmarker.createFromOptions(vision, {
-    baseOptions: { 
-      modelAssetPath: "https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_full/float16/1/pose_landmarker_full.task",
-      delegate: "GPU" 
-    },
+    baseOptions: { modelAssetPath: "https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_full/float16/1/pose_landmarker_full.task", delegate: "GPU" },
     runningMode: "VIDEO"
   });
   app.isModelLoaded = true;
@@ -354,8 +310,7 @@ function handleUpload(e) {
   if (!file) return;
   app.video.src = URL.createObjectURL(file);
   app.video.onloadedmetadata = () => {
-    app.canvas.width = app.video.videoWidth;
-    app.canvas.height = app.video.videoHeight;
+    app.canvas.width = app.video.videoWidth; app.canvas.height = app.video.videoHeight;
     app.stateMachine = new VBTStateMachine(app.canvas.height);
     document.getElementById("btn-start-test").disabled = false;
   };
@@ -365,8 +320,7 @@ async function startCamera() {
   const s = await navigator.mediaDevices.getUserMedia({ video: true });
   app.video.srcObject = s;
   app.video.onloadedmetadata = () => {
-    app.canvas.width = app.video.videoWidth;
-    app.canvas.height = app.video.videoHeight;
+    app.canvas.width = app.video.videoWidth; app.canvas.height = app.video.videoHeight;
     app.stateMachine = new VBTStateMachine(app.canvas.height);
     document.getElementById("btn-start-test").disabled = false;
   };
@@ -399,132 +353,39 @@ async function masterLoop(ts) {
 }
 
 function drawDebugSkeleton(pose) {
-  const ctx = app.ctx;
-  const canvas = app.canvas;
-  
+  const ctx = app.ctx; const canvas = app.canvas;
   for (const side of ['LEFT', 'RIGHT']) {
     const color = side === 'LEFT' ? '#00ff00' : '#ff0000';
-    
-    const wrist = pose[side].WRIST;
-    const elbow = pose[side].ELBOW;
-    const shoulder = pose[side].SHOULDER;
-    const hip = pose[side].HIP;
-    const knee = pose[side].KNEE;
-    const nose = pose[side].NOSE;
-    
-    ctx.strokeStyle = color;
-    ctx.lineWidth = 3;
-    ctx.beginPath();
+    const wrist = pose[side].WRIST; const elbow = pose[side].ELBOW; const shoulder = pose[side].SHOULDER; const hip = pose[side].HIP; const knee = pose[side].KNEE;
+    ctx.strokeStyle = color; ctx.lineWidth = 3; ctx.beginPath();
     ctx.moveTo(wrist.x * canvas.width, wrist.y * canvas.height);
     ctx.lineTo(elbow.x * canvas.width, elbow.y * canvas.height);
     ctx.lineTo(shoulder.x * canvas.width, shoulder.y * canvas.height);
     ctx.lineTo(hip.x * canvas.width, hip.y * canvas.height);
     ctx.lineTo(knee.x * canvas.width, knee.y * canvas.height);
     ctx.stroke();
-    
-    const joints = { wrist, elbow, shoulder, hip, knee, nose };
-    for (const [name, joint] of Object.entries(joints)) {
-      ctx.fillStyle = color;
-      ctx.beginPath();
-      ctx.arc(joint.x * canvas.width, joint.y * canvas.height, 8, 0, Math.PI * 2);
-      ctx.fill();
-      
-      ctx.fillStyle = '#ffffff';
-      ctx.font = 'bold 12px sans-serif';
-      ctx.fillText(name.toUpperCase(), joint.x * canvas.width + 10, joint.y * canvas.height);
-    }
-  }
-  
-  if (app.stateMachine && app.stateMachine.state.lockedSide !== "unknown") {
-    const side = app.stateMachine.state.lockedSide;
-    const wrist = pose[side].WRIST;
-    ctx.strokeStyle = '#ffff00';
-    ctx.lineWidth = 4;
-    ctx.beginPath();
-    ctx.arc(wrist.x * canvas.width, wrist.y * canvas.height, 15, 0, Math.PI * 2);
-    ctx.stroke();
-    
-    ctx.fillStyle = '#ffff00';
-    ctx.font = 'bold 20px sans-serif';
-    ctx.fillText(`TRACKING: ${side}`, 20, canvas.height - 20);
   }
 }
 
 function record(m) {
-  app.totalReps++;
-  app.lastMove = m.type;
-  app.history[m.type].push(m.velocity);
-
-  const countEl = document.getElementById(`val-${m.type.toLowerCase()}s`);
-  if (countEl) countEl.innerText = app.history[m.type].length;
-  
-  const moveEl = document.getElementById("detected-movement");
-  if (moveEl) moveEl.innerText = m.type;
+  app.totalReps++; app.lastMove = m.type; app.history[m.type].push(m.velocity);
+  document.getElementById(`val-${m.type.toLowerCase()}s`).innerText = app.history[m.type].length;
+  document.getElementById(`val-${m.type.toLowerCase()}-velocity`).innerText = m.velocity.toFixed(2);
+  document.getElementById("val-total-reps").innerText = app.totalReps;
+  document.getElementById("detected-movement").innerText = m.type;
 }
 
 function resetSession() {
-  app.totalReps = 0;
-  app.lastMove = "READY";
+  app.totalReps = 0; app.lastMove = "READY";
   app.history = { CLEAN: [], PRESS: [], SNATCH: [], SWING: [] };
-  
-  if (app.stateMachine) {
-    app.stateMachine.reset();
-  }
-
-  if (app.video) {
-    if (app.video.src) {
-      app.video.pause();
-      app.video.currentTime = 0;
-    }
-  }
-
-  const countEls = ['val-cleans', 'val-presses', 'val-snatches', 'val-swings', 'val-rows', 'val-total-reps'];
-  countEls.forEach(id => {
-    const el = document.getElementById(id);
-    if (el) el.textContent = '0';
-  });
-
-  const velEls = ['val-clean-velocity', 'val-press-velocity', 'val-snatch-velocity', 'val-swing-velocity', 'val-row-velocity', 'val-velocity'];
-  velEls.forEach(id => {
-    const el = document.getElementById(id);
-    if (el) el.textContent = '0.00';
-  });
-
-  const dropEls = ['val-clean-drop', 'val-press-drop', 'val-snatch-drop', 'val-swing-drop', 'val-row-drop'];
-  dropEls.forEach(id => {
-    const el = document.getElementById(id);
-    if (el) {
-      el.textContent = '--';
-      el.style.color = '#fff';
-    }
-  });
-
-  const movementEl = document.getElementById('detected-movement');
-  if (movementEl) movementEl.textContent = 'Waiting...';
-
-  console.log("🔄 Session Reset");
+  if (app.stateMachine) app.stateMachine.reset();
+  ['val-cleans', 'val-presses', 'val-snatches', 'val-swings', 'val-total-reps'].forEach(id => document.getElementById(id).textContent = '0');
+  ['val-clean-velocity', 'val-press-velocity', 'val-snatch-velocity', 'val-swing-velocity', 'val-velocity'].forEach(id => document.getElementById(id).textContent = '0.00');
+  document.getElementById("detected-movement").innerText = "READY";
 }
 
 function drawUI(s, p) {
-  const velEl = document.getElementById("val-velocity");
-  if (velEl) velEl.innerText = Math.abs(s.smoothedVy).toFixed(2);
-
-  app.ctx.save();
-  
-  app.ctx.fillStyle = "rgba(0, 0, 0, 0.6)";
-  app.ctx.fillRect(20, 20, 180, 90);
-  
-  app.ctx.fillStyle = "#ffffff";
-  app.ctx.font = "bold 40px sans-serif";
-  app.ctx.fillText(app.totalReps, 40, 65);
-  app.ctx.font = "bold 14px sans-serif";
-  app.ctx.fillText("TOTAL REPS", 40, 85);
-  
-  app.ctx.fillStyle = "#3b82f6";
-  app.ctx.font = "bold 18px sans-serif";
-  app.ctx.fillText(app.lastMove, 100, 65);
-  
-  app.ctx.restore();
+  document.getElementById("val-velocity").innerText = Math.abs(s.smoothedVy).toFixed(2);
 }
 
 initializeApp();
