@@ -1,4 +1,4 @@
-/* VBT v4.1 - Organized & Complete */
+/* VBT v4.2 - FIXED MOVEMENT CLASSIFICATION */
 import { PoseLandmarker, FilesetResolver } from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/vision_bundle.mjs";
 
 class VBTStateMachine {
@@ -15,9 +15,6 @@ class VBTStateMachine {
       OVERHEAD_MIN_HEIGHT: 0.05,
       PULL_VELOCITY_TRIGGER: 0.4,
       LOCKOUT_VY_CUTOFF: 0.6,
-      CLEAN_HOLD_FRAMES: 15,  
-      CLEAN_HOLD_VY: 0.3,     
-      SWING_HEIGHT_BUFFER: 0.08,
       VELOCITY_ALPHA: 0.15,
       POSITION_ALPHA: 0.3,
       TORSO_METERS: 0.45,
@@ -29,22 +26,17 @@ class VBTStateMachine {
       NOSETOHEADCM: 11
     };
 
-    // Calibration data - single unified version
     this.calibrationData = {
       isCalibrated: false,
       framesCaptured: 0,
       neutralWristOffset: 0,
       maxTorsoLength: 0,
-
-      // Pixel measurements
       ankleToNosePixels: 0,
       shoulderToHipPixels: 0,
       hipToKneePixels: 0,
       kneeToAnklePixels: 0,
       shoulderToElbowPixels: 0,
       elbowToWristPixels: 0,
-
-      // Real measurements in cm
       pixelToCmRatio: 0,
       torsoLengthCm: 0,
       thighLengthCm: 0,
@@ -68,7 +60,6 @@ class VBTStateMachine {
       currentRepPeak: 0,
       hipCrossedUpward: false,
       wristStartedBelowHip: false,
-      shoulderHoldFrames: 0,
       smoothedVy: 0,
       lastTimestamp: 0,
       lastWristY: null,
@@ -166,13 +157,12 @@ class VBTStateMachine {
     const leftWristOffset = smoothedPose.LEFT.WRIST.y - smoothedPose.LEFT.HIP.y;
     const rightWristOffset = smoothedPose.RIGHT.WRIST.y - smoothedPose.RIGHT.HIP.y;
 
-    // === CALIBRATION PHASE (first 30 frames) ===
+    // === CALIBRATION PHASE ===
     if (!this.calibrationData.isCalibrated) {
       this.calibrationData.framesCaptured++;
       this.calibrationData.neutralWristOffset += (leftWristOffset + rightWristOffset) / 2;
       this.calibrationData.maxTorsoLength = Math.max(this.calibrationData.maxTorsoLength, currentTorso);
 
-      // Accumulate body measurements
       const ankle = (pose.LEFT.ANKLE.y + pose.RIGHT.ANKLE.y) / 2;
       const nose = (pose.LEFT.NOSE.y + pose.RIGHT.NOSE.y) / 2;
       const shoulder = (pose.LEFT.SHOULDER.y + pose.RIGHT.SHOULDER.y) / 2;
@@ -189,7 +179,6 @@ class VBTStateMachine {
       this.calibrationData.elbowToWristPixels += Math.abs(elbow - wrist);
 
       if (this.calibrationData.framesCaptured >= 30) {
-        // Average all measurements
         this.calibrationData.neutralWristOffset /= 30;
         this.calibrationData.ankleToNosePixels /= 30;
         this.calibrationData.shoulderToHipPixels /= 30;
@@ -198,11 +187,9 @@ class VBTStateMachine {
         this.calibrationData.shoulderToElbowPixels /= 30;
         this.calibrationData.elbowToWristPixels /= 30;
 
-        // Calculate pixel-to-cm ratio
         const ankleToNoseCm = this.calibrationData.fullHeightCm - this.THRESHOLDS.NOSETOHEADCM;
         this.calibrationData.pixelToCmRatio = ankleToNoseCm / this.calibrationData.ankleToNosePixels;
 
-        // Convert to cm
         this.calibrationData.torsoLengthCm = this.calibrationData.shoulderToHipPixels * this.calibrationData.pixelToCmRatio;
         this.calibrationData.thighLengthCm = this.calibrationData.hipToKneePixels * this.calibrationData.pixelToCmRatio;
         this.calibrationData.shinLengthCm = this.calibrationData.kneeToAnklePixels * this.calibrationData.pixelToCmRatio;
@@ -213,12 +200,11 @@ class VBTStateMachine {
 
         console.log("=== CALIBRATION COMPLETE ===");
         console.log(`Torso: ${this.calibrationData.torsoLengthCm.toFixed(1)} cm`);
-        console.log(`Pixel-to-CM Ratio: ${this.calibrationData.pixelToCmRatio.toFixed(4)}`);
       }
       return null;
     }
 
-    // === FLEXIBLE UNLOCK (Hand Reset) ===
+    // === FLEXIBLE UNLOCK ===
     const leftAtHome = Math.abs(leftWristOffset - this.calibrationData.neutralWristOffset) < 0.10;
     const rightAtHome = Math.abs(rightWristOffset - this.calibrationData.neutralWristOffset) < 0.10;
     const isTall = currentTorso > (this.calibrationData.maxTorsoLength * 0.85);
@@ -228,7 +214,6 @@ class VBTStateMachine {
       this.drawResetUI(ctx, canvas, smoothedPose);
 
       if (this.state.resetProgress > this.THRESHOLDS.RESET_DURATION_FRAMES) {
-        console.log("✅ Flexible Unlock Triggered");
         this.reset();
         return null;
       }
@@ -251,7 +236,7 @@ class VBTStateMachine {
     const shoulder = smoothedPose[side].SHOULDER;
     const nose = smoothedPose[side].NOSE;
 
-    // === SET CALIBRATION FOR VELOCITY ===
+    // === SET CALIBRATION ===
     if (!this.state.calibration && shoulder && hip) {
       if (this.calibrationData.torsoLengthCm > 0) {
         this.state.calibration = this.calibrationData.torsoLengthCm / 100;
@@ -274,7 +259,6 @@ class VBTStateMachine {
     const atRack = Math.abs(wrist.y - shoulder.y) < 0.15 && 
                    Math.abs(wrist.x - (smoothedPose.LEFT.SHOULDER.x + smoothedPose.RIGHT.SHOULDER.x)/2) < 0.2;
 
-    // RACK DETECTION - Only when not actively pulling
     if (this.state.phase === "IDLE" || this.state.phase === "LOCKED") {
       if (atRack && !hinged) {
         if (++this.state.rackFrameCount >= this.THRESHOLDS.RACK_LOCK_FRAMES) {
@@ -290,7 +274,7 @@ class VBTStateMachine {
       }
     }
 
-    // === MOVEMENT DETECTION LOGIC ===
+    // === MOVEMENT DETECTION ===
     let result = null;
 
     if (this.state.phase === "IDLE") {
@@ -300,37 +284,23 @@ class VBTStateMachine {
         this.state.currentRepPeak = 0;
         this.state.hipCrossedUpward = false;
         this.state.wristStartedBelowHip = wrist.y > hip.y;
-        this.state.shoulderHoldFrames = 0;
       }
     } else if (this.state.phase === "PULLING") {
       this.state.currentRepPeak = Math.max(this.state.currentRepPeak, Math.abs(this.state.smoothedVy));
 
       if (wrist.y < hip.y) this.state.hipCrossedUpward = true;
 
-      const isAtShoulder = wrist.y <= (shoulder.y + 0.12) && wrist.y >= (shoulder.y - 0.08);
       const nearlyStopped = Math.abs(this.state.smoothedVy) < this.THRESHOLDS.LOCKOUT_VY_CUTOFF;
 
-      // CLEAN DETECTION: Hold at shoulder for required frames
-      if (nearlyStopped && isAtShoulder && !hinged) {
-        this.state.shoulderHoldFrames++;
-        if (this.state.shoulderHoldFrames >= this.THRESHOLDS.CLEAN_HOLD_FRAMES) {
-          result = this.classify(this.state.movementStartPose, wrist, shoulder, hip, nose, hinged, this.state.hipCrossedUpward, true);
-          this.state.phase = "LOCKED";
+      if (nearlyStopped) {
+        result = this.classify(this.state.movementStartPose, wrist, shoulder, hip, nose, hinged, this.state.hipCrossedUpward);
+        this.state.phase = "LOCKED";
 
-          // Auto-set RACK if clean finished at rack
-          if (result && result.type === "CLEAN" && atRack) {
-            this.state.currentPose = "RACK";
-            this.state.rackFrameCount = this.THRESHOLDS.RACK_LOCK_FRAMES;
-          }
+        // Auto-set RACK if clean finished at rack
+        if (result && result.type === "CLEAN" && atRack) {
+          this.state.currentPose = "RACK";
+          this.state.rackFrameCount = this.THRESHOLDS.RACK_LOCK_FRAMES;
         }
-      } else if (nearlyStopped) {
-        // Quick lockout for other movements
-        result = this.classify(this.state.movementStartPose, wrist, shoulder, hip, nose, hinged, this.state.hipCrossedUpward, false);
-        this.state.phase = "LOCKED";
-      } else if (this.state.smoothedVy > this.THRESHOLDS.PULL_VELOCITY_TRIGGER && this.state.shoulderHoldFrames > 0) {
-        // Bell started falling before completing hold
-        result = this.classify(this.state.movementStartPose, wrist, shoulder, hip, nose, hinged, this.state.hipCrossedUpward, false);
-        this.state.phase = "LOCKED";
       }
 
       if (result) result.velocity = this.state.currentRepPeak;
@@ -344,28 +314,24 @@ class VBTStateMachine {
     return result;
   }
 
-  classify(start, w, s, h, nose, hinged, crossed, heldAtShoulder) {
+  // ✅ FIXED CLASSIFICATION LOGIC
+  classify(start, w, s, h, nose, hinged, crossed) {
     const isOverhead = w.y < (nose.y - 0.05);
+    const isAtShoulder = w.y <= (s.y + 0.12) && w.y >= (s.y - 0.08);
 
-    // CLEAN from hinge/standing
-    if ((start === "HINGE" || start === "NONE") && crossed) {
-      if (isOverhead) return { type: "SNATCH" };
-
-      // CLEAN: Held at shoulder
-      if (heldAtShoulder && w.y <= (s.y + 0.08)) return { type: "CLEAN" };
-
-      // SWING: Reached shoulder area but didn't hold
-      if (w.y <= (s.y + this.THRESHOLDS.SWING_HEIGHT_BUFFER) && w.y < h.y) return { type: "SWING" };
+    // From HINGE or standing position
+    if (start === "HINGE" || start === "NONE") {
+      if (isOverhead && crossed) return { type: "SNATCH" };
+      if (isAtShoulder && !hinged && crossed) return { type: "CLEAN" };
+      // SWING: Below shoulder, above hip
+      if (w.y > s.y && w.y < h.y && crossed) return { type: "SWING" };
     }
 
-    // RECLEAN: Started from rack, held at shoulder
-    if (start === "RACK" && heldAtShoulder) {
-      return { type: "CLEAN" };
-    }
-
-    // PRESS: Started from rack, went overhead
-    if (start === "RACK" && isOverhead) {
-      return { type: "PRESS" };
+    // From RACK position
+    if (start === "RACK") {
+      if (isOverhead) return { type: "PRESS" };
+      // Re-clean from rack
+      if (isAtShoulder && !hinged) return { type: "CLEAN" };
     }
 
     return null;
@@ -501,7 +467,6 @@ async function masterLoop(ts) {
       }
     };
 
-    // Draw skeleton always
     drawDebugSkeleton(pose);
 
     if (app.isTestRunning && app.stateMachine) {
@@ -592,7 +557,6 @@ function resetSession() {
 function drawUI(s, p) {
   document.getElementById("val-velocity").innerText = Math.abs(s.smoothedVy).toFixed(2);
 
-  // Tracking dot on active wrist
   if (s.lockedSide !== "unknown") {
     const w = p[s.lockedSide].WRIST;
     app.ctx.fillStyle = "#10b981";
