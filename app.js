@@ -402,7 +402,7 @@ function drawDebugSkeleton(pose) {
     const ankle = pose[side].ANKLE;  // Now drawing to ankle
     
     ctx.strokeStyle = color; 
-    ctx.lineWidth = 3; 
+    ctx.lineWidth = 13; 
     ctx.beginPath();
     ctx.moveTo(wrist.x * canvas.width, wrist.y * canvas.height);
     ctx.lineTo(elbow.x * canvas.width, elbow.y * canvas.height);
