@@ -1,5 +1,11 @@
 # VBT v3.5 - Complete Movement Detection System
 
+> **Note**: This repository includes two versions:
+> - **VBT v3.5** (this file) - Full-featured professional system
+> - **VBT Vanilla 50** - Simplified version for basic tracking ([docs](README-vanilla-50.md))
+> 
+> See [VERSION-COMPARISON.md](VERSION-COMPARISON.md) for detailed comparison.
+
 ## Overview
 Advanced velocity-based training system with comprehensive kettlebell movement detection for Essential Fitness coaching programs.
 

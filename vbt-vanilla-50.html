@@ -1,0 +1,71 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>VBT Vanilla 50 - Simple Movement Tracker</title>
+  <link rel="stylesheet" href="vbt-vanilla-50-style.css">
+</head>
+<body>
+  <div id="loading-overlay">
+    <div class="loading-spinner"></div>
+    <p>Loading...</p>
+  </div>
+
+  <div class="container">
+    <h1>VBT Vanilla 50</h1>
+    
+    <!-- Status -->
+    <div class="status-bar">
+      <div id="status-pill" class="status-pill">Initializing...</div>
+    </div>
+
+    <!-- Video Section -->
+    <div class="video-section">
+      <canvas id="canvas"></canvas>
+      <video id="video" playsinline muted></video>
+    </div>
+
+    <!-- Controls -->
+    <div class="controls">
+      <button id="btn-camera" class="btn btn-primary">Start Camera</button>
+      <input type="file" id="file-input" accept="video/*" class="file-input">
+      <button id="btn-start" class="btn btn-success" disabled>Start Tracking</button>
+      <button id="btn-reset" class="btn btn-secondary">Reset</button>
+    </div>
+
+    <!-- Simple Metrics -->
+    <div class="metrics">
+      <div class="metric-card">
+        <h3>Total Reps</h3>
+        <div class="metric-value" id="total-reps">0</div>
+      </div>
+
+      <div class="metric-card">
+        <h3>Current Velocity</h3>
+        <div class="metric-value" id="velocity">0.00</div>
+        <div class="metric-label">m/s</div>
+      </div>
+
+      <div class="metric-card">
+        <h3>Peak Velocity</h3>
+        <div class="metric-value" id="peak-velocity">0.00</div>
+        <div class="metric-label">m/s</div>
+      </div>
+    </div>
+
+    <!-- Rep History -->
+    <div class="history-panel">
+      <h3>Rep History</h3>
+      <div id="rep-list" class="rep-list"></div>
+    </div>
+
+    <!-- Export -->
+    <div class="export-section">
+      <button id="btn-export" class="btn btn-primary">Export Data</button>
+    </div>
+  </div>
+
+  <script type="module" src="vbt-vanilla-50.js"></script>
+</body>
+</html>
