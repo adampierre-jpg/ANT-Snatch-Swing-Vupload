@@ -229,18 +229,11 @@ function processPhysics(pose, timeMs) {
     return;
   }
   
-  // Calculate velocity
+  // Calculate velocity (meters per second)
   const dyPx = (wrist.y - state.prevWrist.y) * state.canvas.height;
-  let vy = (dyPx / state.calibration) / dt;
+  const vy = (dyPx / state.calibration) / dt;
   
-  // Normalize to 30 FPS
-  const TARGET_FPS = 30;
-  const frameTimeMs = 1000 / TARGET_FPS;
-  const actualFrameTimeMs = timeMs - state.prevWrist.t;
-  const timeRatio = frameTimeMs / actualFrameTimeMs;
-  vy *= timeRatio;
-  
-  // Smooth
+  // Smooth the velocity
   state.smoothedVy = CONFIG.SMOOTHING_ALPHA * vy + (1 - CONFIG.SMOOTHING_ALPHA) * state.smoothedVy;
   state.velocity = Math.abs(state.smoothedVy);
   
@@ -378,7 +371,9 @@ function exportData() {
   
   const a = document.createElement("a");
   a.href = url;
-  a.download = `vbt-vanilla-50-${new Date().toISOString().split('T')[0]}.json`;
+  // Create filesystem-safe filename with date
+  const dateStr = new Date().toISOString().split('T')[0].replace(/-/g, '');
+  a.download = `vbt-vanilla-50-${dateStr}.json`;
   a.click();
   
   URL.revokeObjectURL(url);
