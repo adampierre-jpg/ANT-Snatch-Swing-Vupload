@@ -2020,10 +2020,6 @@ function handleUpload(e) {
   const file = e.target.files?.[0];
   if (!file) return;
 
-  if (app.video.srcObject) {
-    app.video.srcObject = null;
-  }
-
   app.video.onloadedmetadata = () => {
     console.log("✅ [App-3D] Video loaded:", app.video.videoWidth, "x", app.video.videoHeight);
     app.canvas.width = app.video.videoWidth;
@@ -2035,22 +2031,13 @@ function handleUpload(e) {
 
   app.video.src = URL.createObjectURL(file);
   app.video.load();
-  console.log("📁 [App-3D] Video selected:", file.name);
+  console.log("📁 [App-3D] Video uploaded:", file.name);
 }
 
+  
 
-async function startCamera() {
-  try {
-    const s = await navigator.mediaDevices.getUserMedia({ video: true });
 
-    app.video.onloadedmetadata = () => {
-      console.log("✅ [App-3D] Camera loaded:", app.video.videoWidth, "x", app.video.videoHeight);
-      app.canvas.width = app.video.videoWidth;
-      app.canvas.height = app.video.videoHeight;
-      // Create 3D-enhanced state machine
-      app.stateMachine = new VBTStateMachine(app.canvas.height, app.calibrationSystem);
-      document.getElementById("btn-start-test").disabled = false;
-    };
+
 
     app.video.srcObject = s;
     console.log("📹 [App-3D] Camera started");
@@ -2063,7 +2050,7 @@ async function startCamera() {
 
 function toggleTest() {
   app.isTestRunning = !app.isTestRunning;
-  document.getElementById("btn-start-test").innerText = app.isTestRunning ? "PAUSE" : "START";
+  document.getElementById("btn-start-test").innerText = app.isTestRunning ? "PAUSE ANALYSIS" : "START ANALYSIS";
   if (app.isTestRunning) app.video.play();
   else app.video.pause();
 }
