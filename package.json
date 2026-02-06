@@ -1,0 +1,16 @@
+{
+  "name": "vbt-movement-detection",
+  "version": "3.5.0",
+  "description": "Velocity-based training system with kettlebell movement detection",
+  "type": "module",
+  "scripts": {
+    "build": "tsc",
+    "watch": "tsc --watch",
+    "clean": "rm -rf dist"
+  },
+  "devDependencies": {
+    "@mediapipe/tasks-vision": "^0.10.0",
+    "typescript": "^5.3.3"
+  },
+  "dependencies": {}
+}
