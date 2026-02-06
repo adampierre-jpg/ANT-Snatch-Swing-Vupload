@@ -14,7 +14,18 @@ type Side = "left" | "right" | "unknown";
 type TestStage = "IDLE" | "RUNNING";
 type Phase = "IDLE" | "BOTTOM" | "CONCENTRIC" | "LOCKOUT";
 type Zone = "FLOOR" | "BACKSWING" | "RACK" | "OVERHEAD" | "TRANSITION" | "UNKNOWN";
-type MovementType = "CLEAN_FROM_FLOOR" | "RE_CLEAN" | "PRESS" | "SNATCH" | "SWING";
+type MovementType = 
+  | "CLEAN_FROM_FLOOR" 
+  | "RE_CLEAN" 
+  | "PRESS" 
+  | "SNATCH" 
+  | "SWING"
+  | "PRESS_SINGLE_LEFT"
+  | "PRESS_SINGLE_RIGHT"
+  | "SNATCH_SINGLE_LEFT"
+  | "SNATCH_SINGLE_RIGHT"
+  | "SWING_SINGLE_LEFT"
+  | "SWING_SINGLE_RIGHT";
 type RepStartPosition = "FLOOR" | "RACK" | null;
 
 interface LandmarkIndices {
