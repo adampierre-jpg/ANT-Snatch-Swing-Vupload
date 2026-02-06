@@ -3,6 +3,32 @@
 ## Overview
 Advanced velocity-based training system with comprehensive kettlebell movement detection for Essential Fitness coaching programs.
 
+## Development
+
+### TypeScript Setup
+The application is written in TypeScript for enhanced type safety and maintainability.
+
+**Build the project:**
+```bash
+npm install
+npm run build
+```
+
+**Watch mode for development:**
+```bash
+npm run watch
+```
+
+The TypeScript source is in `app.ts` and compiles to `dist/app.js` which is used by `index.html`.
+
+### Project Structure
+- `app.ts` - TypeScript source with full type definitions
+- `dist/app.js` - Compiled JavaScript (ES2020 modules)
+- `index.html` - Main HTML interface
+- `style.css` - Application styles
+- `tsconfig.json` - TypeScript compiler configuration
+- `package.json` - Dependencies and build scripts
+
 ## Features
 
 ### Movement Detection
@@ -33,9 +59,10 @@ Advanced velocity-based training system with comprehensive kettlebell movement d
 ## Files
 
 ### Core System
-- `vbt-v3.5-COMPLETE.js` - Main detection engine
-- `vbt-v3.5.html` - User interface
-- `vbt-v3.5-styles.css` - Styling
+- `app.ts` - TypeScript source code with complete type definitions
+- `dist/app.js` - Compiled JavaScript module
+- `index.html` - User interface
+- `style.css` - Styling
 
 ### Configuration
 All tunable thresholds in `CONFIG` object:
@@ -52,11 +79,13 @@ MOVEMENT: {
 ## Usage
 
 ### Basic Setup
-1. Open `vbt-v3.5.html` in browser
-2. Upload video or start camera
-3. Click "Start Test"
-4. Perform movements
-5. Export data to Make.com
+1. Install dependencies: `npm install`
+2. Build the TypeScript: `npm run build`
+3. Open `index.html` in browser
+4. Upload video or start camera
+5. Click "Start Test"
+6. Perform movements
+7. Export data to Make.com
 
 ### Movement Examples
 
